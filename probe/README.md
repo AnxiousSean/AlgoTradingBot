@@ -27,8 +27,8 @@ TradeLocker Studio actually supports, so later phases are built on facts instead
 
 | # | Look for | It tells us |
 |---|---|---|
-| 1 | `ENV|python=`, `ENV|backtrader=` | which versions to pin locally |
-| 2 | `ENV|import ... -> OK/FAIL` | which modules the final bot may use (numpy? zoneinfo for DST?) |
+| 1 | `ENV|backtrader=` | which Backtrader version to pin locally (Python version is unavailable: Studio blocks `sys`) |
+| 2 | `ENV|import ... -> OK/FAIL` | which modules work at runtime. Already known: Studio blocks `sys`, `zoneinfo` and `getattr()` |
 | 3 | `DATA|len(self.datas)` | whether there's more than one feed (multi-timeframe) or only one |
 | 4 | `BROKER|param slip_*`, `COMMINFO|commission/mult/margin/leverage` | whether Studio models costs at all; how `size` maps to money |
 | 5 | `BAR|` lines | the timestamp format, and whether timestamps carry a timezone |

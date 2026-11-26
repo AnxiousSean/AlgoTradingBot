@@ -25,12 +25,8 @@ import backtrader as bt
 
 # ---- optional imports: each one is tested and reported --------------------
 IMPORTS = {}
-try:
-    import sys
-    IMPORTS['sys'] = 'OK'
-except Exception as e:  # noqa
-    sys = None
-    IMPORTS['sys'] = 'FAIL %r' % (e,)
+# NOTE: Studio's security policy blocks `sys`, `zoneinfo` and getattr(), so the
+# probe doesn't use them.
 try:
     import math
     IMPORTS['math'] = 'OK'
@@ -57,23 +53,16 @@ except Exception as e:
     IMPORTS['statistics'] = 'FAIL %r' % (e,)
 try:
     import numpy
-    IMPORTS['numpy'] = 'OK %s' % getattr(numpy, '__version__', '?')
+    IMPORTS['numpy'] = 'OK'
 except Exception as e:
     numpy = None
     IMPORTS['numpy'] = 'FAIL %r' % (e,)
 try:
     import pandas
-    IMPORTS['pandas'] = 'OK %s' % getattr(pandas, '__version__', '?')
+    IMPORTS['pandas'] = 'OK'
 except Exception as e:
     pandas = None
     IMPORTS['pandas'] = 'FAIL %r' % (e,)
-try:
-    import zoneinfo
-    zoneinfo.ZoneInfo('America/New_York')
-    IMPORTS['zoneinfo(America/New_York)'] = 'OK'
-except Exception as e:
-    zoneinfo = None
-    IMPORTS['zoneinfo(America/New_York)'] = 'FAIL %r' % (e,)
 try:
     import time as _time
     IMPORTS['time'] = 'OK'
@@ -91,7 +80,7 @@ def _r(x, nd=5):
 
 def _ny_is_dst(d):
     """US daylight saving: 2nd Sunday of March 02:00 -> 1st Sunday of Nov 02:00.
-    Computed by hand so it works even if zoneinfo is missing. Date precision
+    Computed by hand because zoneinfo is blocked in Studio. Date precision
     is enough here: the market is closed when the switch happens."""
     y = d.year
     mar1 = datetime.date(y, 3, 1)
@@ -137,6 +126,19 @@ class ProbeStrategy(bt.Strategy):
         return 'O=%s H=%s L=%s C=%s' % (_r(self.data.open[0]), _r(self.data.high[0]),
                                         _r(self.data.low[0]), _r(self.data.close[0]))
 
+    def _params(self, pobj):
+        """List a Backtrader params object as (name, value) pairs."""
+        try:
+            return list(pobj._getitems())
+        except Exception as e:
+            return [('ERR', repr(e))]
+
+    def _bt_version(self):
+        try:
+            return str(bt.__version__)
+        except Exception:
+            return 'unknown'
+
     def _attr(self, obj, name):
         try:
             return 'yes' if hasattr(obj, name) else 'NO'
@@ -155,9 +157,10 @@ class ProbeStrategy(bt.Strategy):
         self.gaps = []
         self.offset_votes = {}
         self.bar_minutes = None
+        self._cv_calls = 0
+        self._first_next_logged = False
 
-        self.plog('ENV|python=%s' % (sys.version.replace('\n', ' ') if sys else '?'))
-        self.plog('ENV|backtrader=%s' % getattr(bt, '__version__', 'MISSING'))
+        self.plog('ENV|backtrader=%s' % self._bt_version())
         for k in sorted(IMPORTS):
             self.plog('ENV|import %s -> %s' % (k, IMPORTS[k]))
         self.plog('ENV|strategy has builtin .log(): %s' % self._attr(bt.Strategy, 'log'))
@@ -166,15 +169,21 @@ class ProbeStrategy(bt.Strategy):
         try:
             self.plog('DATA|len(self.datas)=%d' % len(self.datas))
             for i, d in enumerate(self.datas):
-                tf = getattr(getattr(d, 'p', None), 'timeframe', '?')
-                comp = getattr(getattr(d, 'p', None), 'compression', '?')
+                tf, comp, tz, nm = '?', '?', '?', '?'
+                try:
+                    tf, comp, tz = d.p.timeframe, d.p.compression, d.p.tz
+                except Exception:
+                    pass
+                try:
+                    nm = d._name
+                except Exception:
+                    pass
                 try:
                     tfname = bt.TimeFrame.getname(tf, comp)
                 except Exception:
                     tfname = '?'
-                tz = getattr(getattr(d, 'p', None), 'tz', '?')
                 self.plog('DATA|feed %d name=%r class=%s timeframe=%s(%s) compression=%s tz=%r'
-                          % (i, getattr(d, '_name', '?'), type(d).__name__, tf, tfname, comp, tz))
+                          % (i, nm, str(type(d)), tf, tfname, comp, tz))
                 try:
                     self.plog('DATA|feed %d lines=%s' % (i, list(d.lines.getlinealiases())))
                 except Exception as e:
@@ -184,23 +193,16 @@ class ProbeStrategy(bt.Strategy):
 
         # ---- broker / commission settings (do they model costs?)
         try:
-            self.plog('BROKER|class=%s' % type(self.broker).__name__)
-            bp = getattr(self.broker, 'p', None)
-            if bp is not None:
-                for k in ('cash', 'checksubmit', 'slip_perc', 'slip_fixed', 'slip_open',
-                          'slip_match', 'slip_limit', 'slip_out', 'coc', 'coo', 'int2pnl',
-                          'shortcash', 'fundmode'):
-                    if hasattr(bp, k):
-                        self.plog('BROKER|param %s=%r' % (k, getattr(bp, k)))
+            self.plog('BROKER|class=%s' % str(type(self.broker)))
+            for k, v in self._params(self.broker.p):
+                self.plog('BROKER|param %s=%r' % (k, v))
         except Exception as e:
             self.plog('BROKER|ERR %r' % (e,))
         try:
             ci = self.broker.getcommissioninfo(self.data)
-            self.plog('COMMINFO|class=%s' % type(ci).__name__)
-            for k in ('commission', 'mult', 'margin', 'commtype', 'stocklike', 'percabs',
-                      'leverage', 'interest', 'automargin'):
-                if hasattr(ci.p, k):
-                    self.plog('COMMINFO|%s=%r' % (k, getattr(ci.p, k)))
+            self.plog('COMMINFO|class=%s' % str(type(ci)))
+            for k, v in self._params(ci.p):
+                self.plog('COMMINFO|%s=%r' % (k, v))
         except Exception as e:
             self.plog('COMMINFO|ERR %r' % (e,))
 
@@ -278,9 +280,13 @@ class ProbeStrategy(bt.Strategy):
                 raw = self.data.datetime[0]
             except Exception:
                 raw = '?'
+            try:
+                tzi = dt.tzinfo
+            except Exception:
+                tzi = '?'
             self.plog('BAR|%d %s %s raw=%s tz=%r %s vol=%s'
                       % (self.bar_n, dt.strftime('%Y-%m-%d %H:%M:%S'), dt.strftime('%a'),
-                         _r(raw, 6), getattr(dt, 'tzinfo', None), self._bar(),
+                         _r(raw, 6), tzi, self._bar(),
                          _r(self.data.volume[0], 2)))
         if self.prev_dt is not None and datetime is not None:
             mins = (dt - self.prev_dt).total_seconds() / 60.0
@@ -335,11 +341,15 @@ class ProbeStrategy(bt.Strategy):
             et = str(order.exectype)
         side = 'BUY' if order.isbuy() else 'SELL'
         ex = order.executed
+        try:
+            mg = ex.margin
+        except Exception:
+            mg = None
         self.plog('ORDER|%s ref=%s %s %s status=%s created_price=%s size=%s '
                   'exec_price=%s exec_size=%s comm=%s margin=%s | bar %s %s'
                   % (tag, order.ref, side, et, st, _r(order.created.price),
                      _r(order.created.size), _r(ex.price), _r(ex.size), _r(ex.comm),
-                     _r(getattr(ex, 'margin', None)),
+                     _r(mg),
                      self._dt().strftime('%Y-%m-%d %H:%M') if self._dt() else '?',
                      self._bar()))
         if self.tstate is not None:
@@ -349,11 +359,15 @@ class ProbeStrategy(bt.Strategy):
 
     def notify_trade(self, trade):
         try:
+            bl = trade.barlen
+        except Exception:
+            bl = '?'
+        try:
             self.plog('TRADE|isclosed=%s size=%s price=%s value=%s pnl=%s pnlcomm=%s '
                       'commission=%s barlen=%s'
                       % (trade.isclosed, _r(trade.size), _r(trade.price), _r(trade.value),
                          _r(trade.pnl, 4), _r(trade.pnlcomm, 4), _r(trade.commission, 4),
-                         getattr(trade, 'barlen', '?')))
+                         bl))
             if trade.isclosed and self.tstate is not None:
                 s = self.tstate
                 if s.get('entry_px') is not None and s.get('exit_px') is not None:
@@ -370,7 +384,7 @@ class ProbeStrategy(bt.Strategy):
 
     def notify_cashvalue(self, cash, value):
         # Only log a handful, to keep the log short.
-        self._cv_calls = getattr(self, '_cv_calls', 0) + 1
+        self._cv_calls += 1
         if self._cv_calls <= 3:
             self.plog('CASHVALUE|bar %d cash=%s value=%s' % (self.bar_n, _r(cash, 2), _r(value, 2)))
 
@@ -649,15 +663,15 @@ class ProbeStrategy(bt.Strategy):
         self.bar_n += 1
         self._track_time()
 
-        if not getattr(self, '_first_next_logged', False):
+        if not self._first_next_logged:
             self._first_next_logged = True
             self.plog('TIME|first next() call at bar %d (earlier bars = indicator warm-up)'
                       % self.bar_n)
         if self.bar_n == 60:
             for name, ind in self.inds.items():
                 try:
-                    vals = ['%s=%s' % (ln, _r(getattr(ind.lines, ln)[0]))
-                            for ln in ind.lines.getlinealiases()]
+                    vals = ['%s=%s' % (ln, _r(ind.lines[i][0]))
+                            for i, ln in enumerate(ind.lines.getlinealiases())]
                     self.plog('IND|%s at bar 60: %s' % (name, ' '.join(vals)))
                 except Exception as e:
                     self.plog('IND|%s value ERR %r' % (name, e))
@@ -695,8 +709,7 @@ class ProbeStrategy(bt.Strategy):
     def stop(self):
         P = self.plog
         P('SUMMARY|================ PROBE SUMMARY ================')
-        P('SUMMARY|backtrader=%s python=%s' % (getattr(bt, '__version__', '?'),
-                                               sys.version.split()[0] if sys else '?'))
+        P('SUMMARY|backtrader=%s' % self._bt_version())
         P('SUMMARY|imports: %s' % ', '.join('%s=%s' % (k, v.split()[0])
                                              for k, v in sorted(IMPORTS.items())))
         P('SUMMARY|feeds=%d  bars=%d  typical_bar_min=%s' % (len(self.datas), self.bar_n,
