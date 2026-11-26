@@ -105,6 +105,9 @@ class ProbeStrategy(bt.Strategy):
         ('max_bar_lines', 60),    # how many initial bars to print
         ('max_gap_lines', 80),    # how many timestamp gaps (session breaks) to print
         ('gap_min_minutes', 30),  # a jump between bars bigger than this counts as a gap
+        ('bar_stamp', 'end'),     # Studio stamps bars at bar END (e.g. 03:09:59.999 for
+                                  # 03:05-03:10). Use 'open' for feeds stamped at bar open.
+        ('spread_lines', 12),     # how many per-bar bid/ask/mid lines to print
     )
 
     # ------------------------------------------------------------------ util
@@ -158,6 +161,11 @@ class ProbeStrategy(bt.Strategy):
         self.offset_votes = {}
         self.bar_minutes = None
         self._cv_calls = 0
+        self._spread_err = False
+        self._spread_logged = 0
+        self._spreads = []
+        self._spread_by_hour = {}
+        self._close_match = {'bid': 0, 'ask': 0, 'mid': 0, 'none': 0}
         self._first_next_logged = False
 
         self.plog('ENV|backtrader=%s' % self._bt_version())
@@ -298,11 +306,51 @@ class ProbeStrategy(bt.Strategy):
             if mins > self.p.gap_min_minutes and mins < 4 * 24 * 60:
                 self._record_gap(self.prev_dt, dt, mins)
         self.prev_dt = dt
+        self._track_spread(dt)
+
+    def _track_spread(self, dt):
+        """Studio feeds carry bid/ask/mid lines: measure the broker's real spread."""
+        try:
+            b, a, m = self.data.bid[0], self.data.ask[0], self.data.mid[0]
+        except Exception as e:
+            if not self._spread_err:
+                self._spread_err = True
+                self.plog('SPREAD|bid/ask/mid not readable: %r' % (e,))
+            return
+        c = self.data.close[0]
+        if self._spread_logged < self.p.spread_lines:
+            self._spread_logged += 1
+            self.plog('SPREAD|%s close=%s bid=%s ask=%s mid=%s ask-bid=%s'
+                      % (dt.strftime('%Y-%m-%d %H:%M:%S'), _r(c), _r(b), _r(a), _r(m),
+                         _r(a - b)))
+        tol = abs(c) * 1e-7 + 1e-9
+        hit = False
+        for k, v in (('bid', b), ('ask', a), ('mid', m)):
+            if abs(c - v) <= tol:
+                self._close_match[k] += 1
+                hit = True
+        if not hit:
+            self._close_match['none'] += 1
+        sp = a - b
+        self._spreads.append(sp)
+        st = self._spread_by_hour.get(dt.hour)
+        if st is None:
+            st = [0, 0.0, sp, sp]
+            self._spread_by_hour[dt.hour] = st
+        st[0] += 1
+        st[1] += sp
+        st[2] = min(st[2], sp)
+        st[3] = max(st[3], sp)
 
     def _record_gap(self, last_dt, next_dt, mins):
-        # Assume bar stamps are bar OPEN times -> market closed at last_dt + 1 bar.
-        bm = self.bar_minutes or (self.deltas and min(self.deltas)) or 0
-        close_srv = last_dt + datetime.timedelta(minutes=bm)
+        # Market closed at the END of the last bar before the gap.
+        if self.p.bar_stamp == 'end':
+            # 21:59:59.999 -> 22:00
+            close_srv = (last_dt + datetime.timedelta(seconds=1)).replace(second=0,
+                                                                          microsecond=0)
+        else:
+            bm = self.bar_minutes or (self.deltas and min(self.deltas)) or 0
+            close_srv = last_dt + datetime.timedelta(minutes=bm)
         # Hypothesis: the break starts at 17:00 New York (gold & index CFDs).
         dst = _ny_is_dst(close_srv)
         ny_to_utc = 4 if dst else 5
@@ -724,6 +772,18 @@ class ProbeStrategy(bt.Strategy):
               % ', '.join(str(_r(x, 6)) for x in self.per_point))
         for n in self.notes:
             P('SUMMARY|note: %s' % n)
+        if self._spreads:
+            sp = sorted(self._spreads)
+            n = len(sp)
+            P('SUMMARY|spread (ask-bid, price units) over %d bars: min=%s median=%s p90=%s '
+              'p99=%s max=%s' % (n, _r(sp[0]), _r(sp[n // 2]), _r(sp[int(n * 0.9)]),
+                                 _r(sp[min(n - 1, int(n * 0.99))]), _r(sp[-1])))
+            P('SUMMARY|close equals: bid x%(bid)d, ask x%(ask)d, mid x%(mid)d, none x%(none)d'
+              % self._close_match)
+            for h in sorted(self._spread_by_hour):
+                st = self._spread_by_hour[h]
+                P('SUMMARY|spread hour %02d (bar-time) n=%d avg=%s min=%s max=%s'
+                  % (h, st[0], _r(st[1] / st[0]), _r(st[2]), _r(st[3])))
         if self.offset_votes:
             votes = sorted(self.offset_votes.items(), key=lambda kv: -kv[1])
             P('SUMMARY|implied server-minus-UTC offset votes (assumes daily/weekly break at '

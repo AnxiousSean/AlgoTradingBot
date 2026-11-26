@@ -51,7 +51,7 @@ def run_probe():
     cerebro = bt.Cerebro()
     cerebro.adddata(bt.feeds.PandasData(dataname=df, timeframe=bt.TimeFrame.Minutes,
                                         compression=5))
-    cerebro.addstrategy(probe_bot.ProbeStrategy)
+    cerebro.addstrategy(probe_bot.ProbeStrategy, bar_stamp='open')
     cerebro.broker.setcash(5000.0)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -81,3 +81,33 @@ def test_probe_runs_and_summarises():
 
 if __name__ == '__main__':
     print(run_probe())
+
+
+class StudioLikeData(bt.feeds.PandasData):
+    """Mimics Studio's TLData: UTC bar-END stamps plus bid/ask/mid lines."""
+    lines = ('ask', 'bid', 'mid')
+    params = (('ask', 'ask'), ('bid', 'bid'), ('mid', 'mid'))
+
+
+def test_probe_on_studio_like_feed():
+    df = make_bars(dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc),
+                   dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc))
+    # re-stamp to UTC bar end (open + 5 min - 1 ms), like Studio
+    df.index = (df.index - pd.Timedelta(hours=2) + pd.Timedelta(minutes=5)
+                - pd.Timedelta(milliseconds=1))
+    df['bid'] = df['close']
+    df['ask'] = df['close'] + 0.30
+    df['mid'] = df['close'] + 0.15
+    cerebro = bt.Cerebro()
+    cerebro.adddata(StudioLikeData(dataname=df, timeframe=bt.TimeFrame.Minutes, compression=5))
+    cerebro.addstrategy(probe_bot.ProbeStrategy)          # default bar_stamp='end'
+    cerebro.broker.setcash(5000.0)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cerebro.run()
+    summary = [l for l in buf.getvalue().splitlines() if l.startswith('PROBE|SUMMARY|')]
+    votes = [l for l in summary if 'offset votes' in l][0]
+    assert votes.split(':')[-1].strip().startswith('+0.0'), votes
+    sp = [l for l in summary if 'spread (ask-bid' in l][0]
+    assert 'median=0.3' in sp, sp
+    assert [l for l in summary if 'close equals: bid x' in l and 'ask x0' in l], summary
