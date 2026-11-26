@@ -1,34 +1,20 @@
-# -*- coding: utf-8 -*-
-"""
-STAGE 0 PROBE - TradeLocker Studio capability test
-===================================================
-
-PURPOSE
-    Finds out which Backtrader features TradeLocker Studio supports, so the
-    real bot only uses features that work there. It does NOT try to make money.
-
-HOW TO USE
-    1. Paste this whole file into a new TradeLocker Studio strategy.
-    2. Run it in the BACKTESTER ONLY (never on a live or prop account, because
-       it places small test orders). Settings:
-         - Instrument: your Nasdaq 100 CFD (e.g. NAS100 / US100 / USTEC)
-         - Timeframe: 15 minutes
-         - Date range: about the last 2 months (it needs more than 900 bars)
-    3. Copy EVERY line that starts with "PROBE|" from the log or console and
-       paste them back to me. The "PROBE|SUMMARY" block at the end matters most.
-    4. If it crashes, send me the full error text instead.
-
-    Change PROBE_SIZE below to your instrument's MINIMUM lot size if 0.01 is
-    rejected.
-"""
 import backtrader as bt
+
+# STAGE 0 PROBE - TradeLocker Studio capability test
+# ---------------------------------------------------
+# Finds out which Backtrader features TradeLocker Studio supports.
+# Run it in the BACKTESTER ONLY (it places small test orders):
+#   instrument = your Nasdaq 100 CFD, timeframe = 15 minutes,
+#   date range = about the last 2 months (needs more than 900 bars).
+# Then copy every line that starts with "PROBE|" and send it back.
+# If 0.01 lots is rejected, set PROBE_SIZE to your minimum lot.
 
 PROBE_SIZE = 0.01          # order size for the test orders (use your min lot)
 PROBE_START_BAR = 30       # first bar at which order tests begin
 
 
 def _p(*parts):
-    """Every output line starts with PROBE| so it is easy to find."""
+    # Every output line starts with PROBE| so it is easy to find.
     try:
         print("PROBE|" + " ".join(str(x) for x in parts))
     except Exception:
@@ -61,26 +47,12 @@ class ProbeStrategy(bt.Strategy):
 
         # Indicators: each one is created separately so one failure does not
         # hide the others.
-        specs = [
-            ("EMA200", lambda: bt.indicators.EMA(self.data.close, period=200)),
-            ("EMA800", lambda: bt.indicators.EMA(self.data.close, period=800)),
-            ("EMA5", lambda: bt.indicators.EMA(self.data.close, period=5)),
-            # NOTE: plain RSI(period=2) crashes with ZeroDivisionError on runs of
-            # same-direction bars, so only the safe-division versions are run.
-            ("RSI2_safediv", lambda: bt.indicators.RSI(self.data.close, period=2, safediv=True)),
-            ("RSI2_Safe", lambda: bt.indicators.RSI_Safe(self.data.close, period=2)),
-            ("ATR14", lambda: bt.indicators.ATR(self.data, period=14)),
-            ("SMA20", lambda: bt.indicators.SMA(self.data.close, period=20)),
-            ("Highest20", lambda: bt.indicators.Highest(self.data.high, period=20)),
-            ("Lowest20", lambda: bt.indicators.Lowest(self.data.low, period=20)),
-            ("CrossOver", lambda: bt.indicators.CrossOver(self.data.close, bt.indicators.EMA(self.data.close, period=5))),
-            ("MACD", lambda: bt.indicators.MACD(self.data.close)),
-            ("MACDHisto", lambda: bt.indicators.MACDHisto(self.data.close)),
-            ("TrueRange", lambda: bt.indicators.TrueRange(self.data)),
-        ]
-        for name, make in specs:
+        names = ["EMA200", "EMA800", "EMA5", "RSI2_safediv", "RSI2_Safe", "ATR14",
+                 "SMA20", "Highest20", "Lowest20", "CrossOver", "MACD", "MACDHisto",
+                 "TrueRange"]
+        for name in names:
             try:
-                self.ind[name] = make()
+                self.ind[name] = self._make_indicator(name)
                 self.results["ind_" + name] = "OK created"
             except Exception as e:
                 self.results["ind_" + name] = "FAIL {}: {}".format(type(e).__name__, e)
@@ -92,6 +64,38 @@ class ProbeStrategy(bt.Strategy):
             self.results["macd_histo_attr"] = "OK" if m is not None else "FAIL no MACDHisto"
         except Exception as e:
             self.results["macd_histo_attr"] = "FAIL {}: {}".format(type(e).__name__, e)
+
+    def _make_indicator(self, name):
+        # NOTE: plain RSI(period=2) crashes with ZeroDivisionError on runs of
+        # same-direction bars, so only the safe-division versions are run.
+        c = self.data.close
+        if name == "EMA200":
+            return bt.indicators.EMA(c, period=200)
+        if name == "EMA800":
+            return bt.indicators.EMA(c, period=800)
+        if name == "EMA5":
+            return bt.indicators.EMA(c, period=5)
+        if name == "RSI2_safediv":
+            return bt.indicators.RSI(c, period=2, safediv=True)
+        if name == "RSI2_Safe":
+            return bt.indicators.RSI_Safe(c, period=2)
+        if name == "ATR14":
+            return bt.indicators.ATR(self.data, period=14)
+        if name == "SMA20":
+            return bt.indicators.SMA(c, period=20)
+        if name == "Highest20":
+            return bt.indicators.Highest(self.data.high, period=20)
+        if name == "Lowest20":
+            return bt.indicators.Lowest(self.data.low, period=20)
+        if name == "CrossOver":
+            return bt.indicators.CrossOver(c, bt.indicators.EMA(c, period=5))
+        if name == "MACD":
+            return bt.indicators.MACD(c)
+        if name == "MACDHisto":
+            return bt.indicators.MACDHisto(c)
+        if name == "TrueRange":
+            return bt.indicators.TrueRange(self.data)
+        raise ValueError("unknown indicator " + name)
 
     # ------------------------------------------------------- environment
     def _env_checks(self):
@@ -212,9 +216,17 @@ class ProbeStrategy(bt.Strategy):
         self.pending[order.ref] = tag
         self.results["order_" + tag] = "SUBMITTED ref={}".format(order.ref)
 
-    def _try(self, tag, fn):
+    def _try(self, tag, kind, **kw):
         try:
-            return fn()
+            if kind == "buy":
+                return self.buy(**kw)
+            if kind == "sell":
+                return self.sell(**kw)
+            if kind == "close":
+                return self.close()
+            if kind == "buy_bracket":
+                return self.buy_bracket(**kw)
+            raise ValueError("unknown order kind " + kind)
         except Exception as e:
             self.results["order_" + tag] = "FAIL {}: {}".format(type(e).__name__, e)
             return None
@@ -282,14 +294,14 @@ class ProbeStrategy(bt.Strategy):
 
         # A: market buy
         if b == 0:
-            o = self._try("A_market_buy", lambda: self.buy(size=PROBE_SIZE))
+            o = self._try("A_market_buy", "buy", size=PROBE_SIZE)
             self._track("A_market_buy", o)
         # B: protective sell stop below price
         if b == 2:
             pos = self.getposition(d)
             self.results["position_after_buy"] = "OK size={} price={}".format(pos.size, pos.price)
             self.vpp_v0, self.vpp_c0 = self.broker.getvalue(), c
-            o = self._try("B_sell_stop_protect", lambda: self.sell(size=PROBE_SIZE, exectype=bt.Order.Stop, price=c * 0.97))
+            o = self._try("B_sell_stop_protect", "sell", size=PROBE_SIZE, exectype=bt.Order.Stop, price=c * 0.97)
             self._track("B_sell_stop_protect", o)
             if o is not None:
                 self._open_orders.append(o)
@@ -306,14 +318,12 @@ class ProbeStrategy(bt.Strategy):
             except Exception as e:
                 self.results["value_per_point_per_1_size"] = "FAIL {}".format(e)
             self._cancel_all()
-            o = self._try("C_close", lambda: self.close())
+            o = self._try("C_close", "close")
             self._track("C_close", o)
         # D: native bracket order
         if b == 20:
-            def mk():
-                return self.buy_bracket(size=PROBE_SIZE, exectype=bt.Order.Market,
-                                        stopprice=c * 0.97, limitprice=c * 1.03)
-            orders = self._try("D_buy_bracket", mk)
+            orders = self._try("D_buy_bracket", "buy_bracket", size=PROBE_SIZE, exectype=bt.Order.Market,
+                               stopprice=c * 0.97, limitprice=c * 1.03)
             if orders:
                 try:
                     names = ["D_bracket_main", "D_bracket_stop", "D_bracket_limit"]
@@ -327,16 +337,16 @@ class ProbeStrategy(bt.Strategy):
         if b == 35:
             self.results["position_before_E"] = "OK size={}".format(self.getposition(d).size)
             self._cancel_all()
-            o = self._try("E_close", lambda: self.close())
+            o = self._try("E_close", "close")
             self._track("E_close", o)
         # F: stop-entry orders above / below (breakout style) with OCO
         if b == 45:
             hi, lo = d.high[0], d.low[0]
-            o1 = self._try("F_buy_stop_entry", lambda: self.buy(size=PROBE_SIZE, exectype=bt.Order.Stop, price=hi + (hi - lo) * 0.1))
+            o1 = self._try("F_buy_stop_entry", "buy", size=PROBE_SIZE, exectype=bt.Order.Stop, price=hi + (hi - lo) * 0.1)
             self._track("F_buy_stop_entry", o1)
             if o1 is not None:
                 self._open_orders.append(o1)
-                o2 = self._try("F_sell_stop_entry_oco", lambda: self.sell(size=PROBE_SIZE, exectype=bt.Order.Stop, price=lo - (hi - lo) * 0.1, oco=o1))
+                o2 = self._try("F_sell_stop_entry_oco", "sell", size=PROBE_SIZE, exectype=bt.Order.Stop, price=lo - (hi - lo) * 0.1, oco=o1)
                 self._track("F_sell_stop_entry_oco", o2)
                 if o2 is not None:
                     self._open_orders.append(o2)
@@ -345,24 +355,27 @@ class ProbeStrategy(bt.Strategy):
             self.results["position_before_G"] = "OK size={}".format(self.getposition(d).size)
             self._cancel_all()
             if self.getposition(d).size != 0:
-                o = self._try("G_close", lambda: self.close())
+                o = self._try("G_close", "close")
                 self._track("G_close", o)
         # H: market short
         if b == 90:
-            o = self._try("H_market_sell_short", lambda: self.sell(size=PROBE_SIZE))
+            o = self._try("H_market_sell_short", "sell", size=PROBE_SIZE)
             self._track("H_market_sell_short", o)
         if b == 92:
             self.results["position_after_short"] = "OK size={}".format(self.getposition(d).size)
         # I: limit order far away (should stay pending, then be cancelled)
         if b == 95:
-            o = self._try("I_buy_limit_far", lambda: self.buy(size=PROBE_SIZE, exectype=bt.Order.Limit, price=c * 0.5))
+            o = self._try("I_buy_limit_far", "buy", size=PROBE_SIZE, exectype=bt.Order.Limit, price=c * 0.5)
             self._track("I_buy_limit_far", o)
             if o is not None:
                 self._open_orders.append(o)
         if b == 100:
             self._cancel_all()
-            o = self._try("H_close_short", lambda: self.close())
+            o = self._try("H_close_short", "close")
             self._track("H_close_short", o)
+
+    def _gap_sort_key(self, kv):
+        return -kv[1]
 
     # ------------------------------------------------------- report
     def stop(self):
@@ -379,7 +392,7 @@ class ProbeStrategy(bt.Strategy):
         _p("==== BARS PER HOUR OF DAY (hour as stamped in data) ====")
         _p("hours", " ".join("{}:{}".format(h, self.hour_hist[h]) for h in sorted(self.hour_hist)))
         _p("==== GAPS BETWEEN BARS (minutes:count, top 8) ====")
-        top = sorted(self.gaps.items(), key=lambda kv: -kv[1])[:8]
+        top = sorted(self.gaps.items(), key=self._gap_sort_key)[:8]
         _p("gaps", " ".join("{}:{}".format(k, v) for k, v in top))
         _p("==== ORDER EVENTS ====")
         for line in self.order_log:
