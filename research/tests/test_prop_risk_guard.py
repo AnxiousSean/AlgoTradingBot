@@ -9,7 +9,7 @@ D = dt.datetime
 
 
 def guard(**kw):
-    return PropRiskGuard(**kw)
+    return PropRiskGuard(settings=kw)
 
 
 # A Wednesday in summer (EDT, UTC-4) and one in winter (EST, UTC-5)

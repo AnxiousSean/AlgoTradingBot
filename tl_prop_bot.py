@@ -126,6 +126,10 @@ def trading_day_of(ny_dt):
     return (ny_dt + dtm.timedelta(hours=7)).date()
 
 
+def quiet_log(msg):
+    pass
+
+
 # =============================================================================
 # 3. PROP RISK GUARD
 # =============================================================================
@@ -144,13 +148,12 @@ class PropRiskGuard(object):
 
     FORCED_REASONS = ("TOTAL_STOP", "DAILY_STOP")   # may close before min hold time
 
-    def __init__(self, settings=None, log=None, **overrides):
+    def __init__(self, settings=None, log=None):
         s = dict(SETTINGS)
         if settings:
             s.update(settings)
-        s.update(overrides)
         self.s = s
-        self.log = log or (lambda msg: None)
+        self.log = log if log is not None else quiet_log
 
         self.initial = float(s["INITIAL_BALANCE"])
         self.firm_floor = self.initial * (1 - s["FIRM_MAX_LOSS_PCT"] / 100.0)          # 4,500
@@ -349,7 +352,10 @@ class PropRiskGuard(object):
         caps = [("risk", by_risk), ("margin", by_margin), ("max_lot", float(s["MAX_LOT"]))]
         if s["NO_LOT_INCREASE_AFTER_LOSS"] and self.last_was_loss and self.last_lots:
             caps.append(("no_increase_after_loss", self.last_lots))
-        limit_name, raw = min(caps, key=lambda kv: kv[1])
+        limit_name, raw = caps[0]
+        for cap_name, cap_value in caps:
+            if cap_value < raw:
+                limit_name, raw = cap_name, cap_value
         lots = self.round_lots(raw)
         why = "risk${:.2f} dist={:.2f} raw={:.4f} limited_by={} -> {} lots".format(
             allowed_loss, dist, raw, limit_name, lots)
