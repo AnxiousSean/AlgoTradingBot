@@ -18,7 +18,7 @@ firm. It has no martingale, grid, recovery, averaging down, hedging or HFT,
 and it never raises lot size after a loss.
 """
 import math
-import datetime as _dt
+import datetime as dtm
 
 import backtrader as bt  # noqa: F401  (used by the strategy section in Stage 2)
 
@@ -84,46 +84,46 @@ SETTINGS = dict(
 # =============================================================================
 # 2. TIME HELPERS - New York time without needing extra libraries
 # =============================================================================
-def _nth_sunday(year, month, n):
-    d = _dt.date(year, month, 1)
-    first = d + _dt.timedelta(days=(6 - d.weekday()) % 7)
-    return first + _dt.timedelta(days=7 * (n - 1))
+def nth_sunday(year, month, n):
+    d = dtm.date(year, month, 1)
+    first = d + dtm.timedelta(days=(6 - d.weekday()) % 7)
+    return first + dtm.timedelta(days=7 * (n - 1))
 
 
 def ny_offset_hours(utc_dt):
     """New York's offset from UTC (-4 summer, -5 winter), US rules since 2007."""
     y = utc_dt.year
-    dst_start = _dt.datetime.combine(_nth_sunday(y, 3, 2), _dt.time(7, 0))   # 2:00 EST
-    dst_end = _dt.datetime.combine(_nth_sunday(y, 11, 1), _dt.time(6, 0))    # 2:00 EDT
+    dst_start = dtm.datetime.combine(nth_sunday(y, 3, 2), dtm.time(7, 0))   # 2:00 EST
+    dst_end = dtm.datetime.combine(nth_sunday(y, 11, 1), dtm.time(6, 0))    # 2:00 EDT
     return -4 if dst_start <= utc_dt < dst_end else -5
 
 
 def utc_to_ny(utc_dt):
-    return utc_dt + _dt.timedelta(hours=ny_offset_hours(utc_dt))
+    return utc_dt + dtm.timedelta(hours=ny_offset_hours(utc_dt))
 
 
 def to_utc(dt, data_tz):
     """Convert a bar timestamp in the data's clock to naive UTC."""
     if dt.tzinfo is not None:
-        off = dt.utcoffset() or _dt.timedelta(0)
+        off = dt.utcoffset() or dtm.timedelta(0)
         return (dt - off).replace(tzinfo=None)
     if data_tz in ("UTC", "utc", 0, None):
         return dt
     if data_tz in ("NY", "ny", "America/New_York"):
-        guess = dt + _dt.timedelta(hours=5)
-        return dt - _dt.timedelta(hours=ny_offset_hours(guess))
-    return dt - _dt.timedelta(hours=float(data_tz))
+        guess = dt + dtm.timedelta(hours=5)
+        return dt - dtm.timedelta(hours=ny_offset_hours(guess))
+    return dt - dtm.timedelta(hours=float(data_tz))
 
 
 def parse_hhmm(s):
     h, m = s.split(":")
-    return _dt.time(int(h), int(m))
+    return dtm.time(int(h), int(m))
 
 
 def trading_day_of(ny_dt):
     """The firm's trading day: it starts at 17:00 New York, so 17:00 Monday
     already belongs to Tuesday."""
-    return (ny_dt + _dt.timedelta(hours=7)).date()
+    return (ny_dt + dtm.timedelta(hours=7)).date()
 
 
 # =============================================================================
@@ -157,7 +157,7 @@ class PropRiskGuard(object):
         self.total_floor = self.initial * (1 - s["INTERNAL_TOTAL_STOP_PCT"] / 100.0)   # 4,650
         self.target_level = self.initial * (1 + (s["STEP_TARGET_PCT"] + s["TARGET_BUFFER_PCT"]) / 100.0)
 
-        self.news_ny = sorted(_dt.datetime.strptime(x, "%Y-%m-%d %H:%M") for x in s["NEWS_EVENTS_NY"])
+        self.news_ny = sorted(dtm.datetime.strptime(x, "%Y-%m-%d %H:%M") for x in s["NEWS_EVENTS_NY"])
         self.friday_close = parse_hhmm(s["FRIDAY_CLOSE_NY"])
         self.weekend_flatten = parse_hhmm(s["WEEKEND_FLATTEN_NY"])
         self.week_open = parse_hhmm(s["WEEK_OPEN_NY"])
@@ -180,18 +180,18 @@ class PropRiskGuard(object):
     def ny(self, now):
         return utc_to_ny(to_utc(now, self.s["DATA_TIMEZONE"]))
 
-    def _day_loss_allowed(self, pct):
+    def day_loss_allowed(self, pct):
         """Money the day may lose. Uses the SMALLER of initial balance and
         start-of-day reference, so it is never looser than either rule."""
         return pct / 100.0 * min(self.initial, self.day_start_ref)
 
     @property
     def daily_floor(self):
-        return self.day_start_ref - self._day_loss_allowed(self.s["INTERNAL_DAILY_STOP_PCT"])
+        return self.day_start_ref - self.day_loss_allowed(self.s["INTERNAL_DAILY_STOP_PCT"])
 
     @property
     def firm_daily_floor(self):
-        return self.day_start_ref - self._day_loss_allowed(self.s["FIRM_DAILY_DD_PCT"])
+        return self.day_start_ref - self.day_loss_allowed(self.s["FIRM_DAILY_DD_PCT"])
 
     def day_pnl(self, equity):
         return equity - self.day_start_ref
@@ -205,7 +205,7 @@ class PropRiskGuard(object):
         ny = self.ny(now)
         day = trading_day_of(ny)
         if day != self.day:
-            self._new_day(day, equity, balance)
+            self.start_new_day(day, equity, balance)
 
         dd_pct = (equity - self.day_start_ref) / self.initial * 100.0
         self.worst_day_pct = min(self.worst_day_pct, dd_pct)
@@ -238,13 +238,13 @@ class PropRiskGuard(object):
             return "DAILY_STOP"
         if self.target_locked:
             return "TARGET_LOCK"
-        if self.s["FLATTEN_BEFORE_WEEKEND"] and self._weekend_flatten_time(ny):
+        if self.s["FLATTEN_BEFORE_WEEKEND"] and self.weekend_flatten_time(ny):
             return "WEEKEND"
-        if self._news_flatten_time(ny):
+        if self.news_flatten_time(ny):
             return "NEWS_FLATTEN"
         return None
 
-    def _new_day(self, day, equity, balance):
+    def start_new_day(self, day, equity, balance):
         if self.day is not None:
             self.log("GUARD NEW_DAY {}: previous day P&L {:.2f}".format(day, equity - self.day_start_ref))
         self.day = day
@@ -254,7 +254,7 @@ class PropRiskGuard(object):
         self.day_halted = False
 
     # ---------------------------------------------------------- time rules
-    def _weekend_flatten_time(self, ny):
+    def weekend_flatten_time(self, ny):
         wd = ny.weekday()   # Mon=0 ... Fri=4, Sat=5, Sun=6
         if wd == 4 and ny.time() >= self.weekend_flatten:
             return True
@@ -264,35 +264,35 @@ class PropRiskGuard(object):
             return True
         return False
 
-    def _weekend_no_open(self, ny):
+    def weekend_no_open(self, ny):
         wd, t = ny.weekday(), ny.time()
-        fri_cutoff = (_dt.datetime.combine(ny.date(), self.friday_close)
-                      - _dt.timedelta(hours=self.s["FRIDAY_NO_OPEN_HOURS"])).time()
+        fri_cutoff = (dtm.datetime.combine(ny.date(), self.friday_close)
+                      - dtm.timedelta(hours=self.s["FRIDAY_NO_OPEN_HOURS"])).time()
         if wd == 4 and t >= fri_cutoff:
             return "FRIDAY_LAST_HOURS"
         if wd == 5:
             return "WEEKEND"
         if wd == 6:
-            open_end = (_dt.datetime.combine(ny.date(), self.week_open)
-                        + _dt.timedelta(hours=self.s["MONDAY_NO_OPEN_HOURS"]))
+            open_end = (dtm.datetime.combine(ny.date(), self.week_open)
+                        + dtm.timedelta(hours=self.s["MONDAY_NO_OPEN_HOURS"]))
             if ny < open_end:
                 return "WEEK_OPEN_FIRST_HOURS"
-        if wd == 0 and t < _dt.time(min(23, int(self.s["MONDAY_NO_OPEN_HOURS"])), 0):
+        if wd == 0 and t < dtm.time(min(23, int(self.s["MONDAY_NO_OPEN_HOURS"])), 0):
             return "MONDAY_FIRST_HOURS"
         return None
 
-    def _news_near(self, ny, before_min, after_min):
+    def news_near(self, ny, before_min, after_min):
         for ev in self.news_ny:
-            if ev - _dt.timedelta(minutes=before_min) <= ny <= ev + _dt.timedelta(minutes=after_min):
+            if ev - dtm.timedelta(minutes=before_min) <= ny <= ev + dtm.timedelta(minutes=after_min):
                 return ev
         return None
 
-    def _news_flatten_time(self, ny):
+    def news_flatten_time(self, ny):
         m = self.s["NEWS_FLATTEN_BEFORE_MIN"]
         if m <= 0:
             return False
         for ev in self.news_ny:
-            if ev - _dt.timedelta(minutes=m) <= ny < ev:
+            if ev - dtm.timedelta(minutes=m) <= ny < ev:
                 return True
         return False
 
@@ -310,14 +310,14 @@ class PropRiskGuard(object):
         if self.entries_today >= self.s["MAX_ENTRIES_PER_DAY"]:
             return False, "MAX_ENTRIES_PER_DAY"
         ny = self.ny(now)
-        wk = self._weekend_no_open(ny)
+        wk = self.weekend_no_open(ny)
         if wk:
             return False, wk
-        if self.s["FLATTEN_BEFORE_WEEKEND"] and self._weekend_flatten_time(ny):
+        if self.s["FLATTEN_BEFORE_WEEKEND"] and self.weekend_flatten_time(ny):
             return False, "WEEKEND"
         before = max(self.s["NEWS_BLOCK_BEFORE_MIN"],
                      self.s["NEWS_FLATTEN_BEFORE_MIN"] + self.s["MIN_HOLD_SECONDS"] / 60.0)
-        ev = self._news_near(ny, before, self.s["NEWS_BLOCK_AFTER_MIN"])
+        ev = self.news_near(ny, before, self.s["NEWS_BLOCK_AFTER_MIN"])
         if ev is not None:
             return False, "NEWS_BLACKOUT {}".format(ev.strftime("%Y-%m-%d %H:%M"))
         return True, "OK"
@@ -384,7 +384,7 @@ class PropRiskGuard(object):
         if held is not None and held < self.s["MIN_HOLD_SECONDS"]:
             return False, "MIN_HOLD ({:.0f}s < {}s)".format(held, self.s["MIN_HOLD_SECONDS"])
         w = self.s["NEWS_NO_CLOSE_WINDOW_MIN"]
-        ev = self._news_near(self.ny(now), w, w)
+        ev = self.news_near(self.ny(now), w, w)
         if ev is not None:
             return False, "NEWS_NO_CLOSE {}".format(ev.strftime("%H:%M"))
         return True, "OK"

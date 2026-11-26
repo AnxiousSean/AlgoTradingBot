@@ -13,7 +13,7 @@ PROBE_SIZE = 0.01          # order size for the test orders (use your min lot)
 PROBE_START_BAR = 30       # first bar at which order tests begin
 
 
-def _p(*parts):
+def plog(*parts):
     # Every output line starts with PROBE| so it is easy to find.
     try:
         print("PROBE|" + " ".join(str(x) for x in parts))
@@ -43,7 +43,8 @@ class ProbeStrategy(bt.Strategy):
         self.first_bars = []
         self.indicator_report_done = False
 
-        self._env_checks()
+        self.results["underscore_method_kept"] = "OK" if hasattr(self, "_underscore_test") else "FAIL (Studio drops methods starting with _)"
+        self.env_checks()
 
         # Indicators: each one is created separately so one failure does not
         # hide the others.
@@ -52,7 +53,7 @@ class ProbeStrategy(bt.Strategy):
                  "TrueRange"]
         for name in names:
             try:
-                self.ind[name] = self._make_indicator(name)
+                self.ind[name] = self.make_indicator(name)
                 self.results["ind_" + name] = "OK created"
             except Exception as e:
                 self.results["ind_" + name] = "FAIL {}: {}".format(type(e).__name__, e)
@@ -65,7 +66,11 @@ class ProbeStrategy(bt.Strategy):
         except Exception as e:
             self.results["macd_histo_attr"] = "FAIL {}: {}".format(type(e).__name__, e)
 
-    def _make_indicator(self, name):
+    def _underscore_test(self):
+        # Diagnostic only: never called. Its presence is checked in __init__.
+        return True
+
+    def make_indicator(self, name):
         # NOTE: plain RSI(period=2) crashes with ZeroDivisionError on runs of
         # same-direction bars, so only the safe-division versions are run.
         c = self.data.close
@@ -98,21 +103,22 @@ class ProbeStrategy(bt.Strategy):
         raise ValueError("unknown indicator " + name)
 
     # ------------------------------------------------------- environment
-    def _env_checks(self):
+    def env_checks(self):
         try:
             import sys
-            _p("python_version", sys.version.replace("\n", " "))
+            plog("python_version", sys.version.replace("\n", " "))
         except Exception as e:
-            _p("python_version FAIL", e)
+            plog("python_version FAIL", e)
         try:
-            _p("backtrader_version", getattr(bt, "__version__", "unknown"))
+            plog("backtrader_version", getattr(bt, "__version__", "unknown"))
         except Exception as e:
-            _p("backtrader_version FAIL", e)
+            plog("backtrader_version FAIL", e)
 
+        import importlib
         for mod in ["math", "datetime", "random", "collections", "json",
                     "zoneinfo", "pytz", "numpy", "pandas", "statistics", "time"]:
             try:
-                __import__(mod)
+                importlib.import_module(mod)
                 self.results["import_" + mod] = "OK"
             except Exception as e:
                 self.results["import_" + mod] = "FAIL {}".format(type(e).__name__)
@@ -189,7 +195,7 @@ class ProbeStrategy(bt.Strategy):
             if tag:
                 self.results["order_" + tag] = "{} {} exec_price={} dt={}".format(
                     "OK" if order.status == order.Completed else "STATUS",
-                    order.getstatusname(), order.executed.price, self._dt_str())
+                    order.getstatusname(), order.executed.price, self.dt_str())
         except Exception as e:
             self.results["notify_order"] = "FAIL {}".format(e)
 
@@ -203,20 +209,20 @@ class ProbeStrategy(bt.Strategy):
             self.results["notify_trade"] = "FAIL {}".format(e)
 
     # ------------------------------------------------------- helpers
-    def _dt_str(self):
+    def dt_str(self):
         try:
             return self.data.datetime.datetime(0).isoformat()
         except Exception as e:
             return "dtFAIL({})".format(e)
 
-    def _track(self, tag, order):
+    def track_order(self, tag, order):
         if order is None:
             self.results["order_" + tag] = "FAIL returned None"
             return
         self.pending[order.ref] = tag
         self.results["order_" + tag] = "SUBMITTED ref={}".format(order.ref)
 
-    def _try(self, tag, kind, **kw):
+    def try_order(self, tag, kind, **kw):
         try:
             if kind == "buy":
                 return self.buy(**kw)
@@ -231,26 +237,26 @@ class ProbeStrategy(bt.Strategy):
             self.results["order_" + tag] = "FAIL {}: {}".format(type(e).__name__, e)
             return None
 
-    def _cancel_all(self):
-        for o in list(getattr(self, "_open_orders", [])):
+    def cancel_all_orders(self):
+        for o in list(getattr(self, "open_orders", [])):
             try:
                 if o is not None and o.alive():
                     self.cancel(o)
             except Exception:
                 pass
-        self._open_orders = []
+        self.open_orders = []
 
     # ------------------------------------------------------- per bar
     def prenext(self):
-        self._step()
+        self.probe_step()
 
     def next(self):
         if not self.indicator_report_done:
-            self._indicator_values("first_next_call")
+            self.indicator_values("first_next_call")
             self.indicator_report_done = True
-        self._step()
+        self.probe_step()
 
-    def _indicator_values(self, where):
+    def indicator_values(self, where):
         for name, ind in self.ind.items():
             try:
                 if name == "MACDHisto":
@@ -260,11 +266,11 @@ class ProbeStrategy(bt.Strategy):
                     val = "macd={:.4f} signal={:.4f}".format(ind.macd[0], ind.signal[0])
                 else:
                     val = "{:.4f}".format(ind[0])
-                self.results["val_" + name] = "OK {} @ {} {}".format(val, self._dt_str(), where)
+                self.results["val_" + name] = "OK {} @ {} {}".format(val, self.dt_str(), where)
             except Exception as e:
                 self.results["val_" + name] = "FAIL {}".format(e)
 
-    def _step(self):
+    def probe_step(self):
         self.bar += 1
         d = self.data
         # ---- time checks
@@ -289,22 +295,22 @@ class ProbeStrategy(bt.Strategy):
         if b < 0:
             return
         c = d.close[0]
-        if not hasattr(self, "_open_orders"):
-            self._open_orders = []
+        if not hasattr(self, "open_orders"):
+            self.open_orders = []
 
         # A: market buy
         if b == 0:
-            o = self._try("A_market_buy", "buy", size=PROBE_SIZE)
-            self._track("A_market_buy", o)
+            o = self.try_order("A_market_buy", "buy", size=PROBE_SIZE)
+            self.track_order("A_market_buy", o)
         # B: protective sell stop below price
         if b == 2:
             pos = self.getposition(d)
             self.results["position_after_buy"] = "OK size={} price={}".format(pos.size, pos.price)
             self.vpp_v0, self.vpp_c0 = self.broker.getvalue(), c
-            o = self._try("B_sell_stop_protect", "sell", size=PROBE_SIZE, exectype=bt.Order.Stop, price=c * 0.97)
-            self._track("B_sell_stop_protect", o)
+            o = self.try_order("B_sell_stop_protect", "sell", size=PROBE_SIZE, exectype=bt.Order.Stop, price=c * 0.97)
+            self.track_order("B_sell_stop_protect", o)
             if o is not None:
-                self._open_orders.append(o)
+                self.open_orders.append(o)
         # C: measure money per point per 1.0 size, then close
         if b == 10:
             try:
@@ -317,90 +323,90 @@ class ProbeStrategy(bt.Strategy):
                     self.results["value_per_point_per_1_size"] = "INCONCLUSIVE price unchanged"
             except Exception as e:
                 self.results["value_per_point_per_1_size"] = "FAIL {}".format(e)
-            self._cancel_all()
-            o = self._try("C_close", "close")
-            self._track("C_close", o)
+            self.cancel_all_orders()
+            o = self.try_order("C_close", "close")
+            self.track_order("C_close", o)
         # D: native bracket order
         if b == 20:
-            orders = self._try("D_buy_bracket", "buy_bracket", size=PROBE_SIZE, exectype=bt.Order.Market,
+            orders = self.try_order("D_buy_bracket", "buy_bracket", size=PROBE_SIZE, exectype=bt.Order.Market,
                                stopprice=c * 0.97, limitprice=c * 1.03)
             if orders:
                 try:
                     names = ["D_bracket_main", "D_bracket_stop", "D_bracket_limit"]
                     for nm, o in zip(names, orders):
-                        self._track(nm, o)
-                        self._open_orders.append(o)
+                        self.track_order(nm, o)
+                        self.open_orders.append(o)
                     self.results["order_D_buy_bracket"] = "OK returned {} orders".format(len(orders))
                 except Exception as e:
                     self.results["order_D_buy_bracket"] = "FAIL {}".format(e)
         # E: cancel bracket legs, close
         if b == 35:
             self.results["position_before_E"] = "OK size={}".format(self.getposition(d).size)
-            self._cancel_all()
-            o = self._try("E_close", "close")
-            self._track("E_close", o)
+            self.cancel_all_orders()
+            o = self.try_order("E_close", "close")
+            self.track_order("E_close", o)
         # F: stop-entry orders above / below (breakout style) with OCO
         if b == 45:
             hi, lo = d.high[0], d.low[0]
-            o1 = self._try("F_buy_stop_entry", "buy", size=PROBE_SIZE, exectype=bt.Order.Stop, price=hi + (hi - lo) * 0.1)
-            self._track("F_buy_stop_entry", o1)
+            o1 = self.try_order("F_buy_stop_entry", "buy", size=PROBE_SIZE, exectype=bt.Order.Stop, price=hi + (hi - lo) * 0.1)
+            self.track_order("F_buy_stop_entry", o1)
             if o1 is not None:
-                self._open_orders.append(o1)
-                o2 = self._try("F_sell_stop_entry_oco", "sell", size=PROBE_SIZE, exectype=bt.Order.Stop, price=lo - (hi - lo) * 0.1, oco=o1)
-                self._track("F_sell_stop_entry_oco", o2)
+                self.open_orders.append(o1)
+                o2 = self.try_order("F_sell_stop_entry_oco", "sell", size=PROBE_SIZE, exectype=bt.Order.Stop, price=lo - (hi - lo) * 0.1, oco=o1)
+                self.track_order("F_sell_stop_entry_oco", o2)
                 if o2 is not None:
-                    self._open_orders.append(o2)
+                    self.open_orders.append(o2)
         # G: cleanup
         if b == 80:
             self.results["position_before_G"] = "OK size={}".format(self.getposition(d).size)
-            self._cancel_all()
+            self.cancel_all_orders()
             if self.getposition(d).size != 0:
-                o = self._try("G_close", "close")
-                self._track("G_close", o)
+                o = self.try_order("G_close", "close")
+                self.track_order("G_close", o)
         # H: market short
         if b == 90:
-            o = self._try("H_market_sell_short", "sell", size=PROBE_SIZE)
-            self._track("H_market_sell_short", o)
+            o = self.try_order("H_market_sell_short", "sell", size=PROBE_SIZE)
+            self.track_order("H_market_sell_short", o)
         if b == 92:
             self.results["position_after_short"] = "OK size={}".format(self.getposition(d).size)
         # I: limit order far away (should stay pending, then be cancelled)
         if b == 95:
-            o = self._try("I_buy_limit_far", "buy", size=PROBE_SIZE, exectype=bt.Order.Limit, price=c * 0.5)
-            self._track("I_buy_limit_far", o)
+            o = self.try_order("I_buy_limit_far", "buy", size=PROBE_SIZE, exectype=bt.Order.Limit, price=c * 0.5)
+            self.track_order("I_buy_limit_far", o)
             if o is not None:
-                self._open_orders.append(o)
+                self.open_orders.append(o)
         if b == 100:
-            self._cancel_all()
-            o = self._try("H_close_short", "close")
-            self._track("H_close_short", o)
+            self.cancel_all_orders()
+            o = self.try_order("H_close_short", "close")
+            self.track_order("H_close_short", o)
 
-    def _gap_sort_key(self, kv):
+    def gap_sort_key(self, kv):
         return -kv[1]
 
     # ------------------------------------------------------- report
     def stop(self):
         if not self.indicator_report_done:
-            self._indicator_values("at_stop (next() never ran: not enough bars for EMA800?)")
+            self.indicator_values("at_stop (next() never ran: not enough bars for EMA800?)")
         try:
             self.results["final_value"] = "OK {}".format(self.broker.getvalue())
             self.results["bars_processed"] = "OK {} last={}".format(self.bar, getattr(self, "last_dt", None))
         except Exception as e:
             self.results["final_value"] = "FAIL {}".format(e)
-        _p("==== FIRST BARS (compare with the chart to see if time is bar OPEN or CLOSE, and the time zone) ====")
+        plog("==== FIRST BARS (compare with the chart to see if time is bar OPEN or CLOSE, and the time zone) ====")
         for line in self.first_bars:
-            _p("bar", line)
-        _p("==== BARS PER HOUR OF DAY (hour as stamped in data) ====")
-        _p("hours", " ".join("{}:{}".format(h, self.hour_hist[h]) for h in sorted(self.hour_hist)))
-        _p("==== GAPS BETWEEN BARS (minutes:count, top 8) ====")
-        top = sorted(self.gaps.items(), key=self._gap_sort_key)[:8]
-        _p("gaps", " ".join("{}:{}".format(k, v) for k, v in top))
-        _p("==== ORDER EVENTS ====")
+            plog("bar", line)
+        plog("==== BARS PER HOUR OF DAY (hour as stamped in data) ====")
+        plog("hours", " ".join("{}:{}".format(h, self.hour_hist[h]) for h in sorted(self.hour_hist)))
+        plog("==== GAPS BETWEEN BARS (minutes:count, top 8) ====")
+        top = sorted(self.gaps.items(), key=self.gap_sort_key)[:8]
+        plog("gaps", " ".join("{}:{}".format(k, v) for k, v in top))
+        plog("==== ORDER EVENTS ====")
         for line in self.order_log:
-            _p("order", line)
-        _p("==== TRADES ====")
+            plog("order", line)
+        plog("==== TRADES ====")
         for line in self.trade_log:
-            _p("trade", line)
-        _p("==== SUMMARY ====")
+            plog("trade", line)
+        plog("==== SUMMARY ====")
         for k in sorted(self.results):
-            _p("SUMMARY", k, "=>", self.results[k])
-        _p("==== END OF PROBE ====")
+            plog("SUMMARY", k, "=>", self.results[k])
+        plog("==== END OF PROBE ====")
