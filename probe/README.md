@@ -20,7 +20,7 @@ TradeLocker Studio actually supports, so later phases are built on facts instead
 3. Copy the full log. If it's too long, paste: every line before the first `PROBE|BAR`, the first
    60 `PROBE|BAR` lines, 15 or so `PROBE|GAP` lines, every `ORDER`/`FILL`/`TRADE`/`MEASURE`/`FLOAT`
    line, and the whole `PROBE|SUMMARY` block.
-4. If every order says `Rejected` or `Margin`, change `PROBE_SIZE` (try `1`, then `0.1`) and run it again.
+4. If every order says `Rejected` or `Margin`, change `probe_size` in the `params` block at the top of the class (try `1`, then `0.1`) and run it again.
    Tell me which value worked.
 
 ## What to read from the log (checklist)

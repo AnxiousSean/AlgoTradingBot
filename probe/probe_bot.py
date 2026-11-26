@@ -7,7 +7,7 @@
 # SAFETY:
 #   * Run it in the Studio BACKTESTER first. If you also launch it live, use a
 #     TradeLocker DEMO account only -- NEVER the GFT challenge account.
-#   * It places ~8 tiny test trades (size = PROBE_SIZE), one at a time, and is
+#   * It places ~8 tiny test trades (size = probe_size param), one at a time, and is
 #     always flat between tests. It never holds a buy and a sell at once: if a
 #     one-cancels-other leg fills, the other leg is cancelled immediately.
 #   * After the last test it does nothing (just keeps logging timestamp gaps).
@@ -82,20 +82,6 @@ except Exception as e:
     IMPORTS['time'] = 'FAIL %r' % (e,)
 
 
-# =============================================================================
-# CONFIG -- edit these if needed
-# =============================================================================
-PROBE_SIZE = 0.01        # order size used for every test trade.
-                         # If every order shows "Rejected"/"Margin", try 1 or 0.1
-                         # and tell me which value worked.
-MOVE_PCT = 0.0015        # distance of test stop/limit entries from price (0.15%)
-BRACKET_PCT = 0.003      # stop/target distance in the bracket tests (0.3%)
-HOLD_BARS = 12           # bars to hold the market-order test position
-MAX_BAR_LINES = 60       # how many initial bars to print
-MAX_GAP_LINES = 80       # how many timestamp gaps (session breaks) to print
-GAP_MIN_MINUTES = 30     # a jump between bars bigger than this counts as a gap
-
-
 def _r(x, nd=5):
     try:
         return round(float(x), nd)
@@ -118,6 +104,19 @@ def _ny_is_dst(d):
 
 
 class ProbeStrategy(bt.Strategy):
+
+    # ------------------------------------------------------------- CONFIG
+    # All settings live here (Backtrader "params"); read as self.p.<name>.
+    params = (
+        ('probe_size', 0.01),     # order size for every test trade. If every order
+                                  # shows Rejected/Margin, try 1 or 0.1 and tell me.
+        ('move_pct', 0.0015),     # distance of test stop/limit entries from price (0.15%)
+        ('bracket_pct', 0.003),   # stop/target distance in the bracket tests (0.3%)
+        ('hold_bars', 12),        # bars to hold the market-order test position
+        ('max_bar_lines', 60),    # how many initial bars to print
+        ('max_gap_lines', 80),    # how many timestamp gaps (session breaks) to print
+        ('gap_min_minutes', 30),  # a jump between bars bigger than this counts as a gap
+    )
 
     # ------------------------------------------------------------------ util
     def plog(self, msg):
@@ -274,7 +273,7 @@ class ProbeStrategy(bt.Strategy):
         dt = self._dt()
         if dt is None:
             return
-        if self.bar_n <= MAX_BAR_LINES:
+        if self.bar_n <= self.p.max_bar_lines:
             try:
                 raw = self.data.datetime[0]
             except Exception:
@@ -290,7 +289,7 @@ class ProbeStrategy(bt.Strategy):
                 if len(self.deltas) == 50:
                     self.bar_minutes = max(set(self.deltas), key=self.deltas.count)
                     self.plog('TIME|typical bar spacing = %s min' % self.bar_minutes)
-            if mins > GAP_MIN_MINUTES and mins < 4 * 24 * 60:
+            if mins > self.p.gap_min_minutes and mins < 4 * 24 * 60:
                 self._record_gap(self.prev_dt, dt, mins)
         self.prev_dt = dt
 
@@ -310,7 +309,7 @@ class ProbeStrategy(bt.Strategy):
         offset = round(offset * 2) / 2.0
         key = '%+.1f(%s)' % (offset, 'NY-DST' if dst else 'NY-STD')
         self.offset_votes[key] = self.offset_votes.get(key, 0) + 1
-        if len(self.gaps) < MAX_GAP_LINES:
+        if len(self.gaps) < self.p.max_gap_lines:
             self.gaps.append(1)
             self.plog('GAP|last=%s %s next=%s %s gap=%.0fmin implied_close=%s '
                       'implied_server_minus_UTC=%+.1fh (if break starts 17:00 NY; NY DST=%s)'
@@ -444,44 +443,44 @@ class ProbeStrategy(bt.Strategy):
                      _r(self.broker.getvalue(), 2), _r(self.broker.getcash(), 2)))
         try:
             if name == 'T1_MARKET':
-                o = self._tag(self.buy(size=PROBE_SIZE), name)
+                o = self._tag(self.buy(size=self.p.probe_size), name)
                 s['orders'] = [o]
                 s['created_close'] = c
             elif name == 'T2_STOP_ENTRY':
-                p = c * (1 + MOVE_PCT)
-                o = self._tag(self.buy(size=PROBE_SIZE, exectype=bt.Order.Stop, price=p), name)
+                p = c * (1 + self.p.move_pct)
+                o = self._tag(self.buy(size=self.p.probe_size, exectype=bt.Order.Stop, price=p), name)
                 s['orders'] = [o]
             elif name == 'T3_LIMIT_ENTRY':
-                p = c * (1 - MOVE_PCT)
-                o = self._tag(self.buy(size=PROBE_SIZE, exectype=bt.Order.Limit, price=p), name)
+                p = c * (1 - self.p.move_pct)
+                o = self._tag(self.buy(size=self.p.probe_size, exectype=bt.Order.Limit, price=p), name)
                 s['orders'] = [o]
             elif name == 'T4_CANCEL':
                 p = c * 0.95
-                o = self._tag(self.buy(size=PROBE_SIZE, exectype=bt.Order.Limit, price=p), name)
+                o = self._tag(self.buy(size=self.p.probe_size, exectype=bt.Order.Limit, price=p), name)
                 s['orders'] = [o]
             elif name == 'T5_VALID_EXPIRY':
                 p = c * 0.95
                 bm = self.bar_minutes or 5
-                o = self._tag(self.buy(size=PROBE_SIZE, exectype=bt.Order.Limit, price=p,
+                o = self._tag(self.buy(size=self.p.probe_size, exectype=bt.Order.Limit, price=p,
                                        valid=datetime.timedelta(minutes=3 * bm)), name)
                 s['orders'] = [o]
                 s['valid_minutes'] = 3 * bm
             elif name == 'T6_OCO':
-                o1 = self._tag(self.buy(size=PROBE_SIZE, exectype=bt.Order.Stop,
-                                        price=c * (1 + MOVE_PCT)), name + '_BUYSTOP')
-                o2 = self._tag(self.sell(size=PROBE_SIZE, exectype=bt.Order.Stop,
-                                         price=c * (1 - MOVE_PCT), oco=o1), name + '_SELLSTOP')
+                o1 = self._tag(self.buy(size=self.p.probe_size, exectype=bt.Order.Stop,
+                                        price=c * (1 + self.p.move_pct)), name + '_BUYSTOP')
+                o2 = self._tag(self.sell(size=self.p.probe_size, exectype=bt.Order.Stop,
+                                         price=c * (1 - self.p.move_pct), oco=o1), name + '_SELLSTOP')
                 s['orders'] = [o1, o2]
                 s['oco_partner'] = {o1.ref: o2, o2.ref: o1}
             elif name in ('T7_BRACKET_LONG', 'T8_BRACKET_SHORT'):
                 if name == 'T7_BRACKET_LONG':
-                    os_ = self.buy_bracket(size=PROBE_SIZE, exectype=bt.Order.Market,
-                                           stopprice=c * (1 - BRACKET_PCT),
-                                           limitprice=c * (1 + BRACKET_PCT))
+                    os_ = self.buy_bracket(size=self.p.probe_size, exectype=bt.Order.Market,
+                                           stopprice=c * (1 - self.p.bracket_pct),
+                                           limitprice=c * (1 + self.p.bracket_pct))
                 else:
-                    os_ = self.sell_bracket(size=PROBE_SIZE, exectype=bt.Order.Market,
-                                            stopprice=c * (1 + BRACKET_PCT),
-                                            limitprice=c * (1 - BRACKET_PCT))
+                    os_ = self.sell_bracket(size=self.p.probe_size, exectype=bt.Order.Market,
+                                            stopprice=c * (1 + self.p.bracket_pct),
+                                            limitprice=c * (1 - self.p.bracket_pct))
                 os_ = list(os_)
                 self.plog('TEST|%s bracket returned %d orders' % (name, len(os_)))
                 for o, role in zip(os_, ('entry', 'stop', 'target')):
@@ -530,7 +529,7 @@ class ProbeStrategy(bt.Strategy):
                               % (k, _r(c), _r(v, 4), _r(cash, 4), pos,
                                  _r(self.position.price), _r(dv, 4), _r(dc, 6),
                                  _r(est, 4) if est is not None else 'n/a'))
-                if k >= HOLD_BARS and pos != 0 and not s.get('closing'):
+                if k >= self.p.hold_bars and pos != 0 and not s.get('closing'):
                     s['closing'] = True
                     o = self._tag(self.close(), name + '_EXIT')
                     s['roles'][o.ref] = 'exit'
