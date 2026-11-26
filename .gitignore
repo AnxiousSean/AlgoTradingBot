@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+*.parquet
+reports/*.html
+logs/
+.env
