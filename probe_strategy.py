@@ -7,6 +7,7 @@ import backtrader as bt
 # Settings: margin 5000, any instrument, 5m or 15m, about 1 month of data.
 # Then copy every line that starts with "PROBE|" and send it back.
 # If 0.01 lots is rejected, set PROBE_SIZE to your minimum lot.
+# The file is 330 lines long and ends with an "END OF FILE" comment.
 #
 # This version uses only plain Python, because Studio's code checks
 # rejected parts of the earlier versions.
@@ -334,3 +335,6 @@ class ProbeStrategy(bt.Strategy):
 
     def custom_method_test(self):
         return True
+
+
+# ===== END OF FILE: if this line is missing in Studio, the copy was cut off =====
