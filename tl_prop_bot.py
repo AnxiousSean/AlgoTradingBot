@@ -48,12 +48,15 @@ SETTINGS = dict(
     NO_LOT_INCREASE_AFTER_LOSS=True, # after a losing trade the next lot size can't be larger
 
     # ---- instrument (read these from TradeLocker's instrument specs) ------
-    SYMBOL="NAS100",                 # instrument name exactly as in TradeLocker
-    VALUE_PER_POINT_PER_LOT=1.0,     # account currency gained per 1.0 price move per 1 lot
+    # Defaults below were MEASURED in Studio on NAS100.X (probe, 2026-11-26).
+    SYMBOL="NAS100.X",               # instrument name exactly as in TradeLocker
+    VALUE_PER_POINT_PER_LOT=10.0,    # $ per 1.0 index point per 1 lot (0.01 lot = $0.10/pt)
     MIN_LOT=0.01,
     LOT_STEP=0.01,
-    MAX_LOT=5.0,                     # hard ceiling on any single order
-    LEVERAGE=20.0,                   # instrument leverage (margin = notional / leverage)
+    TICK_SIZE=0.01,                  # Studio rounds order prices to this
+    MAX_LOT=0.30,                    # hard ceiling on any single order (~$3/pt)
+    LEVERAGE=50.0,                   # Studio reports 1:50 (margin = notional / leverage).
+                                     # Use the LOWER of this and your GFT account leverage.
     MARGIN_CAP_PCT=30.0,             # margin used must stay under this % of equity (firm: 80%)
 
     # ---- time --------------------------------------------------------------

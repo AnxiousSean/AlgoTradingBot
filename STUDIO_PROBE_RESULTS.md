@@ -31,6 +31,17 @@ Run: ETHUSD.X, 5m, 2026-11-12 to 2026-11-26, margin 5000, Studio release 3.21.48
 - **Commission is 0 in the backtest config and no spread was visible**, so Studio results
   will look better than reality. Costs are modelled in the local harness.
 - ETHUSD.X: value per point per 1 lot = 1.0; broker commission info reports leverage 50.
-  **Nasdaq values still to be measured** (run the probe on the Nasdaq CFD, 15m).
 - Pasting: copy the file from a plain-text editor. Earlier failures were caused by the paste
   changing indentation and cutting off the end of the file, not by Studio.
+
+## NAS100.X (15m, 2026-09-26 to 2026-11-26)
+- **Value per point per 1 lot = $10** (0.01 lot = $0.10 per point). Trade P&L matches exactly.
+- Tick size 0.01. Broker commission info: leverage 50, commission 0.
+- 1 lot at 30,000 = $300,000 notional = $6,000 margin at 1:50. With the 30% margin cap,
+  the largest possible position on $5,000 is 0.25 lots.
+- Typical risk-based size: $25 risk / (52-point stop x $10) = 0.04 lots (risks $20.80;
+  rounding down to 0.01 lots under-risks a little, never over-risks).
+- Market orders fill at the next bar's open. No spread difference between buy and sell fills
+  was visible, so Studio backtests are cost-free unless we add commission.
+- Bars are present around the clock on weekdays (UTC); the US cash session is
+  13:30-20:00 UTC in summer time and 14:30-21:00 UTC in winter time. The guard handles the switch.
