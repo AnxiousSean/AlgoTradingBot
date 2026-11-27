@@ -33,7 +33,7 @@ import backtrader as bt
 # =============================================================================
 SETTINGS = dict(
     # ---- which strategy -----------------------------------------------------
-    STRATEGY="RSI2",                 # "RSI2" (15m or 1H bars) or "ORB" (5m bars)
+    STRATEGY="RSI2",                 # "RSI2" (15m/1H), "ORB" (5m) or "SR" (15m/1H)
 
     # ---- account -----------------------------------------------------------
     INITIAL_BALANCE=5000.0,          # starting balance of the evaluation
@@ -100,6 +100,22 @@ SETTINGS = dict(
     ORB_ENTRY_OFFSET_TICKS=1,        # entry stop order this many ticks beyond the range
     RANDOM_DIRECTION=False,          # True = random direction (same days, same brackets)
     RANDOM_SEED=42,
+
+    # ---- Strategy C: support / resistance rejection ------------------------
+    # Levels = swing highs/lows (a bar beyond SR_PIVOT_BARS bars on each side,
+    # only known once those later bars exist) + the previous day's high/low.
+    # Long: price comes down to a support level (touches it, or pierces it by
+    # at most SR_MAX_PIERCE_ATR x ATR), then the bar closes back above it as an
+    # up-bar. Short: the mirror image at resistance.
+    SR_PIVOT_BARS=3,
+    SR_LOOKBACK_BARS=200,            # only swing levels from the last 200 bars
+    SR_USE_PREV_DAY=True,            # add previous firm day's high and low
+    SR_ZONE_ATR=0.10,                # "touch" = within 0.10 x ATR of the level
+    SR_MAX_PIERCE_ATR=0.50,          # deeper than this = a break, not a test
+    SR_STOP_ATR=0.25,                # stop 0.25 x ATR beyond the rejection bar
+    SR_MIN_RR=1.0,                   # skip unless the next level is >= 1R away
+    SR_MAX_RR=3.0,                   # target = next level, capped at 3R (3R if none)
+    SR_TREND_FILTER=False,           # True = longs only above TREND_EMA, shorts below
 
     # ---- time --------------------------------------------------------------
     BAR_TIMESTAMP="close",           # Studio stamps each bar at its CLOSE (measured)
@@ -598,6 +614,19 @@ class TLPropBot(bt.Strategy):
             self.ema_slow = None
             if cfg["USE_SLOW_TREND"]:
                 self.ema_slow = bt.indicators.EMA(c, period=int(cfg["SLOW_TREND_EMA"]))
+        elif self.mode == "SR":
+            self.atr = bt.indicators.ATR(self.data, period=int(cfg["ATR_PERIOD"]))
+            self.ema_trend = None
+            if cfg["SR_TREND_FILTER"]:
+                self.ema_trend = bt.indicators.EMA(self.data.close, period=int(cfg["TREND_EMA"]))
+            self.pivot_highs = []         # [bar number, price]
+            self.pivot_lows = []
+            self.sr_day = None
+            self.sr_day_high = None
+            self.sr_day_low = None
+            self.prev_day_high = None
+            self.prev_day_low = None
+            self.coin = SeededCoin(cfg["RANDOM_SEED"])
         elif self.mode == "ORB":
             self.daily_atr = DailyATR(cfg["ORB_DAILY_ATR_DAYS"])
             self.orb_ranges = []          # past opening-range sizes (points)
@@ -608,7 +637,7 @@ class TLPropBot(bt.Strategy):
                 self.log("CONFIG ERROR: ORB needs bars of " + str(cfg["ORB_MINUTES"])
                          + " minutes or a divisor of it; data has " + str(self.bar_minutes))
         else:
-            self.log("CONFIG ERROR: STRATEGY must be RSI2 or ORB, got " + self.mode)
+            self.log("CONFIG ERROR: STRATEGY must be RSI2, ORB or SR, got " + self.mode)
 
         # order / trade state
         self.entry_order = None
@@ -661,6 +690,8 @@ class TLPropBot(bt.Strategy):
 
         if self.mode == "ORB":
             self.orb_update_bar()
+        elif self.mode == "SR":
+            self.sr_update_bar()
 
         if self.close_order is not None:
             return                                  # waiting for an exit to fill
@@ -677,6 +708,8 @@ class TLPropBot(bt.Strategy):
                 self.rsi2_entry()
             elif self.mode == "ORB":
                 self.orb_entry()
+            elif self.mode == "SR":
+                self.sr_entry()
 
     def track_day(self, equity):
         d = self.guard.day
@@ -733,6 +766,110 @@ class TLPropBot(bt.Strategy):
         else:
             stop = round_to_tick(c + dist, self.tick, "up")
         self.submit_entry(direction, None, stop, c, "RSI2 rsi=" + str(round(self.rsi[0], 1)))
+
+    def sr_update_bar(self):
+        """Track swing levels and the previous day's high/low."""
+        d = self.data
+        day = self.guard.day
+        if day != self.sr_day:
+            if self.sr_day is not None:
+                self.prev_day_high = self.sr_day_high
+                self.prev_day_low = self.sr_day_low
+            self.sr_day = day
+            self.sr_day_high = d.high[0]
+            self.sr_day_low = d.low[0]
+        else:
+            self.sr_day_high = max(self.sr_day_high, d.high[0])
+            self.sr_day_low = min(self.sr_day_low, d.low[0])
+        k = int(self.cfg["SR_PIVOT_BARS"])
+        if len(d) < 2 * k + 1:
+            return
+        mid_h = d.high[-k]
+        mid_l = d.low[-k]
+        is_high = True
+        is_low = True
+        for j in range(1, k + 1):
+            if not (mid_h > d.high[-k - j] and mid_h > d.high[-k + j]):
+                is_high = False
+            if not (mid_l < d.low[-k - j] and mid_l < d.low[-k + j]):
+                is_low = False
+        n = len(d) - k
+        if is_high:
+            self.pivot_highs.append([n, mid_h])
+        if is_low:
+            self.pivot_lows.append([n, mid_l])
+        oldest = len(d) - int(self.cfg["SR_LOOKBACK_BARS"])
+        self.pivot_highs = [p for p in self.pivot_highs if p[0] >= oldest]
+        self.pivot_lows = [p for p in self.pivot_lows if p[0] >= oldest]
+
+    def sr_levels(self):
+        levels = [p[1] for p in self.pivot_highs] + [p[1] for p in self.pivot_lows]
+        if self.cfg["SR_USE_PREV_DAY"] and self.prev_day_high is not None:
+            levels.append(self.prev_day_high)
+            levels.append(self.prev_day_low)
+        return levels
+
+    def sr_entry(self):
+        if not self.in_entry_window():
+            return
+        ok, why = self.guard.can_open(self.now, 0)
+        if not ok:
+            return
+        d = self.data
+        atr = self.atr[0]
+        if atr <= 0 or len(d) < 2:
+            return
+        o, h, lo, c, prev_c = d.open[0], d.high[0], d.low[0], d.close[0], d.close[-1]
+        zone = self.cfg["SR_ZONE_ATR"] * atr
+        pierce = self.cfg["SR_MAX_PIERCE_ATR"] * atr
+        levels = self.sr_levels()
+        direction = 0
+        level = None
+        # support test: came from above, low reached the level, closed back above as an up-bar
+        for L in levels:
+            if prev_c > L and c > L and c > o and lo <= L + zone and lo >= L - pierce:
+                if level is None or L > level:
+                    direction, level = 1, L
+        if direction == 0:
+            for L in levels:
+                if prev_c < L and c < L and c < o and h >= L - zone and h <= L + pierce:
+                    if level is None or L < level:
+                        direction, level = -1, L
+        if direction == 0:
+            return
+        if self.ema_trend is not None:
+            if (direction > 0 and c < self.ema_trend[0]) or (direction < 0 and c > self.ema_trend[0]):
+                return
+        stop_dist = self.cfg["SR_STOP_ATR"] * atr
+        if direction > 0:
+            stop = round_to_tick(lo - stop_dist, self.tick, "down")
+            risk = c - stop
+            above = [L for L in levels if L > c + 0.25 * risk]
+            target = min(above) if above else c + self.cfg["SR_MAX_RR"] * risk
+            target = min(target, c + self.cfg["SR_MAX_RR"] * risk)
+            reward = target - c
+        else:
+            stop = round_to_tick(h + stop_dist, self.tick, "up")
+            risk = stop - c
+            below = [L for L in levels if L < c - 0.25 * risk]
+            target = max(below) if below else c - self.cfg["SR_MAX_RR"] * risk
+            target = max(target, c - self.cfg["SR_MAX_RR"] * risk)
+            reward = c - target
+        if risk <= 0 or reward < self.cfg["SR_MIN_RR"] * risk:
+            return
+        label = "SR level {:.2f}".format(level)
+        if self.cfg["RANDOM_DIRECTION"]:
+            # same moment, same stop and target distances, random side
+            if self.coin.flip() != direction:
+                direction = -direction
+                if direction > 0:
+                    stop = round_to_tick(c - risk, self.tick, "down")
+                    target = c + reward
+                else:
+                    stop = round_to_tick(c + risk, self.tick, "up")
+                    target = c - reward
+            label = "SR RANDOM"
+        self.submit_entry(direction, None, stop, c, label, target=target)
 
     def orb_update_bar(self):
         d = self.data
@@ -800,7 +937,7 @@ class TLPropBot(bt.Strategy):
             return
         self.submit_entry(direction, entry, stop, entry, "ORB" + (" RANDOM" if self.cfg["RANDOM_DIRECTION"] else ""))
 
-    def submit_entry(self, direction, entry_price, stop, planned_entry, label):
+    def submit_entry(self, direction, entry_price, stop, planned_entry, label, target=None):
         """Entry + hard stop as one bracket. entry_price None = market order."""
         equity = self.broker.getvalue()
         lots, why = self.guard.size_position(planned_entry, stop, equity)
@@ -822,6 +959,7 @@ class TLPropBot(bt.Strategy):
         self.trade_info = {"direction": direction, "lots": lots, "stop": stop, "planned": planned_entry,
                            "label": label, "filled": False, "bars": 0, "exit_reason": None,
                            "fill_price": None, "fill_time": None, "target_placed": False,
+                           "target_price": target,
                            "margin_pct": self.guard.margin_used(lots, planned_entry) / equity * 100.0}
         self.log("ORDER {} {} {} lots, entry {}, stop {} ({})".format(
             label, "BUY" if direction > 0 else "SELL", lots,
@@ -875,24 +1013,32 @@ class TLPropBot(bt.Strategy):
         return None
 
     def maybe_place_target(self, t):
-        """ORB R target: placed only after the minimum hold time, so a fast
-        profit can never be closed inside 2 minutes."""
+        """Profit target (ORB R target or SR level): placed only after the
+        minimum hold time, so a fast profit can never be closed inside 2 minutes."""
+        if t["target_placed"] or not t["filled"]:
+            return
         r = self.cfg["ORB_TARGET_R"]
-        if self.mode != "ORB" or r <= 0 or t["target_placed"] or not t["filled"]:
+        if t.get("target_price") is None and (self.mode != "ORB" or r <= 0):
             return
         ok, why = self.guard.exit_allowed(self.now, False)
         if not ok:
             return
         risk_pts = abs(t["fill_price"] - t["stop"])
         if t["direction"] > 0:
-            price = round_to_tick(t["fill_price"] + r * risk_pts, self.tick, "down")
+            if t.get("target_price") is not None:
+                price = round_to_tick(t["target_price"], self.tick, "down")
+            else:
+                price = round_to_tick(t["fill_price"] + r * risk_pts, self.tick, "down")
             if price <= self.data.close[0]:
                 self.exit_position("TARGET_PASSED")
                 return
             self.target_order = self.sell(data=self.exec_data, size=t["lots"], exectype=bt.Order.Limit,
                                           price=price, oco=self.stop_order)
         else:
-            price = round_to_tick(t["fill_price"] - r * risk_pts, self.tick, "up")
+            if t.get("target_price") is not None:
+                price = round_to_tick(t["target_price"], self.tick, "up")
+            else:
+                price = round_to_tick(t["fill_price"] - r * risk_pts, self.tick, "up")
             if price >= self.data.close[0]:
                 self.exit_position("TARGET_PASSED")
                 return

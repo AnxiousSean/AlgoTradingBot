@@ -106,3 +106,31 @@ def test_target_lock_stops_trading(bars5):
         eq += r["pnl"]
         if eq >= lock_eq and locked_at is None:
             locked_at = r["exit_time_ny"]
+
+
+@pytest.mark.parametrize("minutes,extra", [(15, {}), (60, {}), (15, {"SR_TREND_FILTER": True}),
+                                           (15, {"RANDOM_DIRECTION": True})])
+def test_sr(bars5, minutes, extra):
+    s = {"STRATEGY": "SR"}
+    s.update(extra)
+    strat = run_bot(resample(bars5, minutes), minutes, s)
+    recs = check_rules(strat, "SR " + str(extra))
+    reasons = set(r["reason"] for r in recs)
+    assert reasons <= {"STOP", "TARGET", "TARGET_PASSED", "SESSION_END", "DAILY_STOP", "TOTAL_STOP",
+                       "TARGET_LOCK", "NEWS_FLATTEN", "WEEKEND"}, reasons
+
+
+def test_sr_random_is_seeded(bars5):
+    d = resample(bars5, 15)
+    a = run_bot(d, 15, {"STRATEGY": "SR", "RANDOM_DIRECTION": True, "RANDOM_SEED": 3})
+    b = run_bot(d, 15, {"STRATEGY": "SR", "RANDOM_DIRECTION": True, "RANDOM_SEED": 3})
+    assert [r["direction"] for r in a.trade_records] == [r["direction"] for r in b.trade_records]
+
+
+def test_sr_with_minute_execution(bars5):
+    # same harness mode as the research runs: signals on 15m, orders on 1m
+    from harness_core import synthetic_bars
+    one = synthetic_bars(days=40, seed=11, minutes=1)
+    strat = run_bot(resample(one, 15), 15, {"STRATEGY": "SR"}, exec_df=one)
+    if strat.trade_records:
+        check_rules(strat, "SR-1m")

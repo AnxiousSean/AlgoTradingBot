@@ -33,7 +33,7 @@ import pandas as pd
 from harness_core import resample, run_bot, session_minutes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "data", "NAS100_1m_2018.csv")
+DATA = os.path.join(HERE, "data", "NAS100_1m_all.csv")
 COST_REF_PRICE = 30000.0      # costs scale with price: BASE_COST points at this price
 REPORTS = os.path.join(HERE, "reports")
 INITIAL = 5000.0
@@ -238,6 +238,11 @@ def monte_carlo(trades, all_days, target_pct=8.0, runs=10000, seed=1, max_days=7
 # ------------------------------------------------------------------ jobs
 RSI2_BASE = {"STRATEGY": "RSI2"}
 ORB_BASE = {"STRATEGY": "ORB"}
+SR_BASE = {"STRATEGY": "SR"}
+SR_GRID = [("SR_PIVOT_BARS", 3, None, None), ("SR_ZONE_ATR", 0.10, None, None),
+           ("SR_STOP_ATR", 0.25, None, None), ("SR_LOOKBACK_BARS", 200, None, None),
+           ("SR_MAX_RR", 3.0, None, None), ("SR_MIN_RR", 1.0, None, None),
+           ("SR_MAX_PIERCE_ATR", 0.50, None, None)]
 RSI2_GRID = [("RSI_LONG_ENTRY", 10.0, "RSI_SHORT_ENTRY", 90.0), ("TREND_EMA", 200, None, None),
              ("STOP_ATR_MULT", 1.5, None, None), ("TIME_STOP_BARS", 12, None, None),
              ("EXIT_EMA", 5, None, None), ("ATR_PERIOD", 14, None, None)]
@@ -276,14 +281,23 @@ def build_jobs(quick):
             ("ORB 5m range-stop " + tag, 5, dict(ORB_BASE), c),
             ("ORB 5m atr-stop " + tag, 5, dict(ORB_BASE, ORB_STOP_MODE="atr"), c),
             ("ORB 5m range-stop 2R " + tag, 5, dict(ORB_BASE, ORB_TARGET_R=2.0), c),
+            ("SR 15m " + tag, 15, dict(SR_BASE), c),
+            ("SR 1H " + tag, 60, dict(SR_BASE), c),
+            ("SR 15m trend-filter " + tag, 15, dict(SR_BASE, SR_TREND_FILTER=True), c),
         ]
-        seeds = (1, 2, 3) if quick else (1, 2, 3, 4, 5)
+        seeds = (1, 2, 3)
         for sd in seeds:
             jobs.append(("ORB RANDOM seed{} {}".format(sd, tag), 5,
                          dict(ORB_BASE, RANDOM_DIRECTION=True, RANDOM_SEED=sd), c))
-    grid = RSI2_GRID if not quick else RSI2_GRID[:3]
+    grid = RSI2_GRID[:3]          # RSI2 already rejected twice: smaller grid
     for label, s in grid_variants(RSI2_BASE, grid):
         jobs.append(("GRID RSI2 15m " + label, 15, s, BASE_COST))
+    for sd in (1, 2, 3):
+        for cost_mult in (1.0, 1.5):
+            jobs.append(("SR RANDOM seed{} {}x".format(sd, cost_mult), 15,
+                         dict(SR_BASE, RANDOM_DIRECTION=True, RANDOM_SEED=sd), BASE_COST * cost_mult))
+    for label, s in grid_variants(SR_BASE, SR_GRID if not quick else SR_GRID[:2]):
+        jobs.append(("GRID SR 15m " + label, 15, s, BASE_COST))
     ogrid = ORB_GRID if not quick else ORB_GRID[:2]
     for label, s in grid_variants(ORB_BASE, ogrid):
         jobs.append(("GRID ORB 5m " + label, 5, s, BASE_COST))
@@ -401,24 +415,28 @@ def main():
             fmt(mc["UNFINISHED"], 1), fmt(mc["median_days"], 0), v))
     lines.append("")
 
-    # ORB vs random
-    lines += ["## ORB vs random direction (out-of-sample, 1x costs)", ""]
-    real = metrics(subset(res["ORB 5m range-stop 1.0x"]["trades"], cut_ny, None))
-    rnd = [metrics(subset(res[n]["trades"], cut_ny, None)) for n in main_names
-           if n.startswith("ORB RANDOM") and n.endswith("1.0x")]
-    rnd = [m for m in rnd if m.get("trades")]
-    if rnd and real.get("trades"):
-        exps = [m["expectancy_r"] for m in rnd]
-        lines.append("Real ORB expectancy {:+.3f} R over {} trades. Random seeds: {} "
-                     "(mean {:+.3f} R).".format(real["expectancy_r"], real["trades"],
-                                                ", ".join("{:+.3f}".format(e) for e in exps),
-                                                statistics.mean(exps)))
-        better = len([e for e in exps if real["expectancy_r"] > e])
-        lines.append("Real signal beats {} of {} random seeds.".format(better, len(exps)))
-    lines.append("")
+    # real signal vs random direction
+    for strat, real_name, prefix in (("ORB", "ORB 5m range-stop 1.0x", "ORB RANDOM"),
+                                     ("SR", "SR 15m 1.0x", "SR RANDOM")):
+        lines += ["## {} vs random direction (1x costs)".format(strat), ""]
+        for period, lo, hi in (("Out-of-sample", cut_ny, None), ("In-sample", None, cut_ny)):
+            real = metrics(subset(res[real_name]["trades"], lo, hi))
+            all_names = [j[0] for j in jobs]
+            rnd = [metrics(subset(res[n]["trades"], lo, hi)) for n in all_names
+                   if n.startswith(prefix) and n.endswith("1.0x")]
+            rnd = [m for m in rnd if m.get("trades")]
+            if rnd and real.get("trades"):
+                exps = [m["expectancy_r"] for m in rnd]
+                better = len([e for e in exps if real["expectancy_r"] > e])
+                lines.append("- {}: real {:+.3f} R over {} trades; random seeds {} (mean {:+.3f} R); "
+                             "real beats {} of {}.".format(period, real["expectancy_r"], real["trades"],
+                                                          ", ".join("{:+.3f}".format(e) for e in exps),
+                                                          statistics.mean(exps), better, len(exps)))
+        lines.append("")
 
     # Robustness grid
-    for strat, base_name in (("RSI2 15m", "RSI2 15m 1.0x"), ("ORB 5m", "ORB 5m range-stop 1.0x")):
+    for strat, base_name in (("RSI2 15m", "RSI2 15m 1.0x"), ("ORB 5m", "ORB 5m range-stop 1.0x"),
+                             ("SR 15m", "SR 15m 1.0x")):
         rows = [("BASE (defaults)", metrics(subset(res[base_name]["trades"], None, cut_ny)))]
         for j in jobs:
             if j[0].startswith("GRID " + strat):
@@ -427,7 +445,8 @@ def main():
 
     # Exit reasons
     lines += ["## Exit reasons (full period, 1x costs)", ""]
-    for n in ("RSI2 15m 1.0x", "RSI2 1H 1.0x", "ORB 5m range-stop 1.0x", "ORB 5m range-stop 2R 1.0x"):
+    for n in ("RSI2 15m 1.0x", "RSI2 1H 1.0x", "ORB 5m range-stop 1.0x", "ORB 5m range-stop 2R 1.0x",
+              "SR 15m 1.0x", "SR 1H 1.0x"):
         cnt = {}
         for t in res[n]["trades"]:
             cnt[t["reason"]] = cnt.get(t["reason"], 0) + 1
@@ -437,7 +456,8 @@ def main():
               "Signals use the strategy's bars (5m/15m/1H); orders, stops and targets are matched on "
               "1-minute bars. If the 1-minute bar in which an entry filled also reached the stop, the trade "
               "is counted as stopped at the stop price (STOP_IN_FILL_BAR), even if the bar may have reversed first.", ""]
-    for n in ("RSI2 15m 1.0x", "RSI2 1H 1.0x", "ORB 5m range-stop 1.0x", "ORB 5m atr-stop 1.0x"):
+    for n in ("RSI2 15m 1.0x", "RSI2 1H 1.0x", "ORB 5m range-stop 1.0x", "ORB 5m atr-stop 1.0x",
+              "SR 15m 1.0x", "SR 1H 1.0x"):
         lines.append("- {}: {} of {} trades adjusted this way".format(n, res[n]["adjusted"], len(res[n]["trades"])))
     lines.append("")
     lines += ["## Acceptance criteria", "",

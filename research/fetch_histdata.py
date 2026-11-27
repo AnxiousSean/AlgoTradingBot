@@ -7,8 +7,9 @@ Output: data/NAS100_1m.csv  (datetime,open,high,low,close,volume)
   - datetime = bar CLOSE time in UTC (same convention as TradeLocker Studio)
 
 HistData's readme says "EST without daylight saving", but the data shows the
-clock is UTC-5, moving to UTC-4 on the EUROPEAN daylight-saving dates (last
-Sunday of March to last Sunday of October). Checked in research/reports/data_check.md:
+clock is New York local time up to 2018, and from 2019 UTC-5 moving to UTC-4
+on the EUROPEAN daylight-saving dates (last Sunday of March to last Sunday of
+October). Checked in research/reports/data_check.md:
 winter prices match Dukascopy's UTC feed exactly, the 09:30 New York open and
 the 16:15 close land at the right UTC time in every season (including the 2-3
 weeks a year when US and European clocks differ), and summer prices match the
@@ -33,7 +34,7 @@ import zipfile
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from tl_prop_bot import utc_to_ny  # noqa: E402
+from tl_prop_bot import to_utc, utc_to_ny  # noqa: E402
 
 MIN_SESSION_COVERAGE = 0.90    # drop a day if under 90% of its 390 cash-session minutes exist
 
@@ -49,8 +50,12 @@ def last_sunday(year, month):
 
 
 def histdata_to_utc(t):
-    """HistData clock: UTC-5, or UTC-4 while EU summer time is in force
-    (last Sunday March 01:00 UTC to last Sunday October 01:00 UTC)."""
+    """HistData clock (measured, see reports/data_check.md):
+      - up to 2018: New York local time (US daylight-saving dates)
+      - from 2019:  UTC-5, or UTC-4 while EU summer time is in force
+                    (last Sunday March 01:00 UTC to last Sunday October 01:00 UTC)."""
+    if t.year <= 2018:
+        return to_utc(t, "NY")
     guess = t + dt.timedelta(hours=5)
     start = dt.datetime.combine(last_sunday(t.year, 3), dt.time(1, 0))
     end = dt.datetime.combine(last_sunday(t.year, 10), dt.time(1, 0))
