@@ -64,6 +64,10 @@ def main():
              "entries 09:45-15:00 NY. Costs: 2.5 points round trip at NAS100 30,000 (scaled with price); "
              "1.5x = 3.75 points.")
     L.append("")
+    L.append("Each calendar year is simulated as a fresh $5,000 account (indicators warmed up on the "
+              "previous {} days, whose trades are dropped), so a losing year cannot drain the account and "
+              "stop later years from trading.".format(rr.WARMUP_DAYS))
+    L.append("")
     names = [j[0] for j in jobs if not j[0].startswith("GRID")]
     for period, lo, hi in (("Out-of-sample", cut_ny, None), ("In-sample", None, cut_ny)):
         rows = [(n, rr.metrics(rr.subset(res[n]["trades"], lo, hi))) for n in names]
@@ -86,11 +90,11 @@ def main():
     L += ["## Real signal vs random direction (1x costs)", ""]
     for period, lo, hi in (("Out-of-sample", cut_ny, None), ("In-sample", None, cut_ny)):
         real = rr.metrics(rr.subset(res["SCALP 1m 1.0x"]["trades"], lo, hi))
-        exps = [rr.metrics(rr.subset(res["SCALP RANDOM seed{} 1.0x".format(s)]["trades"], lo, hi))["expectancy_r"]
+        exps = [rr.metrics(rr.subset(res["SCALP RANDOM seed{} 1.0x".format(s)]["trades"], lo, hi)).get("expectancy_r", 0.0)
                 for s in (1, 2, 3)]
         L.append("- {}: real {:+.3f} R over {} trades; random {} (mean {:+.3f}); real beats {} of 3.".format(
-            period, real["expectancy_r"], real["trades"], ", ".join("{:+.3f}".format(e) for e in exps),
-            statistics.mean(exps), len([e for e in exps if real["expectancy_r"] > e])))
+            period, real.get("expectancy_r", 0.0), real["trades"], ", ".join("{:+.3f}".format(e) for e in exps),
+            statistics.mean(exps), len([e for e in exps if real.get("expectancy_r", 0.0) > e])))
     L.append("")
     rows = [("BASE (defaults)", rr.metrics(rr.subset(res["SCALP 1m 1.0x"]["trades"], None, cut_ny)))]
     for j in jobs:

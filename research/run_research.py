@@ -38,6 +38,7 @@ COST_REF_PRICE = 30000.0      # costs scale with price: BASE_COST points at this
 REPORTS = os.path.join(HERE, "reports")
 INITIAL = 5000.0
 BASE_COST = 2.5
+WARMUP_DAYS = 45            # indicator warm-up before each yearly run
 RESEARCH_SETTINGS = {"USE_TARGET_LOCK": False, "INTERNAL_TOTAL_STOP_PCT": 99.0}
 
 # ------------------------------------------------------------------ acceptance
@@ -105,11 +106,27 @@ def run_config(job):
     s.update(settings)
     t0 = time.time()
     cost_ref = float(os.environ.get("COST_REF_PRICE", COST_REF_PRICE))
-    strat = run_bot(bars_for(minutes), minutes, s, cost_points=cost, cost_ref_price=cost_ref,
-                    exec_df=bars_for("exec"))
+    sig, ex = bars_for(minutes), bars_for("exec")
+    records = []
+    # One independent $5,000 run per calendar year (plus WARMUP_DAYS of earlier
+    # bars for indicators, whose trades are discarded). A single 16-year run lets
+    # a losing strategy drain the account until the guard stops it trading,
+    # which would leave later years (the out-of-sample period) without trades.
+    for year in range(sig.index[0].year, sig.index[-1].year + 1):
+        y0 = pd.Timestamp(year, 1, 1)
+        y1 = pd.Timestamp(year + 1, 1, 1)
+        w0 = y0 - pd.Timedelta(days=WARMUP_DAYS)
+        sig_y = sig[(sig.index >= w0) & (sig.index < y1)]
+        ex_y = ex[(ex.index >= w0) & (ex.index < y1)]
+        if len(ex_y) == 0 or len(ex[(ex.index >= y0) & (ex.index < y1)]) == 0:
+            continue
+        strat = run_bot(sig_y, minutes, s, cost_points=cost, cost_ref_price=cost_ref, exec_df=ex_y)
+        for r in strat.trade_records:
+            if r.get("fill_time") is not None and pd.Timestamp(r["fill_time"]) >= y0:
+                records.append(r)
     recs = []
     adjusted = 0
-    for r in strat.trade_records:
+    for r in records:
         rec = {k: r[k] for k in ("entry_time_ny", "exit_time_ny", "day", "direction", "lots",
                                  "entry", "stop", "pnl", "r", "reason", "held_min", "fill_time")}
         rec, changed = fill_bar_stop_check(rec, cost, cost_ref)
@@ -389,6 +406,10 @@ def main():
                  "at 6,300 in 2018), 1.5x = {} points. Risk 0.5% ($25) per trade, "
                  "1:20 leverage, 30% margin cap. {} backtests in {:.0f} s.".format(
                      BASE_COST, BASE_COST * 1.5, len(jobs), elapsed))
+    lines.append("")
+    lines.append("Each calendar year is simulated as a fresh $5,000 account (indicators warmed up on the "
+              "previous {} days, whose trades are dropped), so a losing year cannot drain the account and "
+              "stop later years from trading.".format(WARMUP_DAYS))
     lines.append("")
     lines.append("Data source: HistData.com NSXUSD 1m bars (same feed as Dukascopy USATECHIDXUSD; not TradeLocker's feed, but matches NAS100.X within a few points, see data_check.md).")
     lines.append("")
