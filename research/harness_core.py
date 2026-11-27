@@ -83,7 +83,7 @@ def resample(df, minutes):
 
 
 def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, leverage=20.0,
-            cost_ref_price=0.0,
+            cost_ref_price=0.0, exec_df=None,
             news=None, verbose=False):
     """Run TLPropBot on a close-stamped OHLCV DataFrame. Returns the strategy."""
     s = dict(settings or {})
@@ -99,6 +99,10 @@ def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, l
         cerebro = bt.Cerebro(stdstats=False)
         feed = bt.feeds.PandasData(dataname=df, timeframe=bt.TimeFrame.Minutes, compression=minutes)
         cerebro.adddata(feed)
+        if exec_df is not None:
+            # orders and stops are matched on these 1-minute bars (see TLPropBot.exec_data)
+            cerebro.adddata(bt.feeds.PandasData(dataname=exec_df, timeframe=bt.TimeFrame.Minutes,
+                                                compression=1))
         cerebro.broker.setcash(float(s.get("INITIAL_BALANCE", tl_prop_bot.SETTINGS["INITIAL_BALANCE"])))
         cerebro.broker.addcommissioninfo(LotCommission(value_per_point=value_per_point,
                                                        cost_points=cost_points, leverage_=leverage,
@@ -107,3 +111,13 @@ def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, l
         return cerebro.run()[0]
     finally:
         tl_prop_bot.SETTINGS["NEWS_EVENTS_NY"] = old_news
+
+
+def session_minutes(df1, start="09:25", end="16:05"):
+    """1-minute bars inside the US session (NY time) on weekdays: all the
+    execution feed needs, because the bot is always flat outside the session."""
+    ny = [tl_prop_bot.utc_to_ny(t.to_pydatetime() - dt.timedelta(minutes=1)) for t in df1.index]
+    a = tl_prop_bot.minutes_of(tl_prop_bot.parse_hhmm(start))
+    b = tl_prop_bot.minutes_of(tl_prop_bot.parse_hhmm(end))
+    keep = [t.weekday() < 5 and a <= t.hour * 60 + t.minute < b for t in ny]
+    return df1[keep]

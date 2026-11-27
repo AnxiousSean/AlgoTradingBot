@@ -30,7 +30,7 @@ import time
 
 import pandas as pd
 
-from harness_core import resample, run_bot
+from harness_core import resample, run_bot, session_minutes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data", "NAS100_1m_2018.csv")
@@ -58,9 +58,44 @@ _BARS = {}
 
 def bars_for(minutes):
     if minutes not in _BARS:
-        one = load_bars()
-        _BARS[minutes] = one if minutes == 1 else resample(one, minutes)
+        if minutes == "exec":
+            _BARS[minutes] = session_minutes(bars_for(1))
+        elif minutes == 1:
+            _BARS[minutes] = load_bars()
+        else:
+            _BARS[minutes] = resample(bars_for(1), minutes)
     return _BARS[minutes]
+
+
+def fill_bar_stop_check(rec, cost_points, cost_ref):
+    """Conservative fix for what no bar backtest can see: if the 1-minute bar
+    in which the entry filled also reached the stop, assume the stop was hit
+    right after the fill (a live broker's stop is active immediately).
+    Returns the corrected record and whether it changed."""
+    one = bars_for(1)
+    t = rec.get("fill_time")
+    if t is None or rec["entry"] is None:
+        return rec, False
+    stamp = pd.Timestamp(t) + pd.Timedelta(minutes=1)           # 1m bar close stamp
+    if stamp not in one.index:
+        return rec, False
+    bar = one.loc[stamp]
+    d = rec["direction"]
+    hit = bar["low"] <= rec["stop"] if d > 0 else bar["high"] >= rec["stop"]
+    if not hit or rec["reason"] == "STOP_IN_FILL_BAR":
+        return rec, False
+    vpp = 10.0
+    scale = rec["entry"] / cost_ref if cost_ref > 0 else 1.0
+    cost = cost_points * scale * vpp * rec["lots"]
+    risk = abs(rec["entry"] - rec["stop"]) * rec["lots"] * vpp
+    pnl = -risk - cost
+    new = dict(rec)
+    new["pnl"] = pnl
+    new["r"] = pnl / risk if risk > 0 else rec["r"]
+    new["reason"] = "STOP_IN_FILL_BAR"
+    new["exit_time_ny"] = rec["entry_time_ny"] + dt.timedelta(minutes=1)
+    new["held_min"] = 1.0
+    return new, True
 
 
 # ------------------------------------------------------------------ one run
@@ -69,14 +104,19 @@ def run_config(job):
     s = dict(RESEARCH_SETTINGS)
     s.update(settings)
     t0 = time.time()
-    strat = run_bot(bars_for(minutes), minutes, s, cost_points=cost,
-                    cost_ref_price=float(os.environ.get("COST_REF_PRICE", COST_REF_PRICE)))
+    cost_ref = float(os.environ.get("COST_REF_PRICE", COST_REF_PRICE))
+    strat = run_bot(bars_for(minutes), minutes, s, cost_points=cost, cost_ref_price=cost_ref,
+                    exec_df=bars_for("exec"))
     recs = []
+    adjusted = 0
     for r in strat.trade_records:
-        recs.append({k: r[k] for k in ("entry_time_ny", "exit_time_ny", "day", "direction", "lots",
-                                       "entry", "stop", "pnl", "r", "reason", "held_min")})
+        rec = {k: r[k] for k in ("entry_time_ny", "exit_time_ny", "day", "direction", "lots",
+                                 "entry", "stop", "pnl", "r", "reason", "held_min", "fill_time")}
+        rec, changed = fill_bar_stop_check(rec, cost, cost_ref)
+        adjusted += 1 if changed else 0
+        recs.append(rec)
     return {"name": name, "minutes": minutes, "settings": settings, "cost": cost,
-            "trades": recs, "seconds": time.time() - t0}
+            "trades": recs, "seconds": time.time() - t0, "adjusted": adjusted}
 
 
 def run_many(jobs, procs):
@@ -392,6 +432,13 @@ def main():
         for t in res[n]["trades"]:
             cnt[t["reason"]] = cnt.get(t["reason"], 0) + 1
         lines.append("- **{}**: {}".format(n, ", ".join("{} {}".format(k, v) for k, v in sorted(cnt.items()))))
+    lines.append("")
+    lines += ["## Execution model", "",
+              "Signals use the strategy's bars (5m/15m/1H); orders, stops and targets are matched on "
+              "1-minute bars. If the 1-minute bar in which an entry filled also reached the stop, the trade "
+              "is counted as stopped at the stop price (STOP_IN_FILL_BAR), even if the bar may have reversed first.", ""]
+    for n in ("RSI2 15m 1.0x", "RSI2 1H 1.0x", "ORB 5m range-stop 1.0x", "ORB 5m atr-stop 1.0x"):
+        lines.append("- {}: {} of {} trades adjusted this way".format(n, res[n]["adjusted"], len(res[n]["trades"])))
     lines.append("")
     lines += ["## Acceptance criteria", "",
               "Ready only if OUT-OF-SAMPLE at 1.5x costs: >= 100 trades, PF >= 1.25, max DD <= 6%, "

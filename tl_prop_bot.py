@@ -577,6 +577,14 @@ class TLPropBot(bt.Strategy):
             self.bar_minutes = int(self.data.p.compression)
         else:
             self.bar_minutes = 60 * int(self.data.p.compression)
+        # Orders go to the LAST data feed. In Studio there is one feed, so this
+        # is the chart itself. The research harness adds a 1-minute feed here so
+        # stops and entries are checked every minute, like a live broker does.
+        self.exec_data = self.datas[-1]
+        self.exec_minutes = self.bar_minutes
+        if len(self.datas) > 1:
+            self.exec_minutes = int(self.exec_data.p.compression)
+        self.signal_len = 0
         self.session_start = minutes_of(parse_hhmm(cfg["SESSION_START_NY"]))
         self.session_end = minutes_of(parse_hhmm(cfg["SESSION_END_NY"]))
         self.last_entry = minutes_of(parse_hhmm(cfg["LAST_ENTRY_NY"]))
@@ -631,12 +639,23 @@ class TLPropBot(bt.Strategy):
             dt = dt + dtm.timedelta(minutes=self.bar_minutes)
         return dt
 
+    def exec_bar_end(self):
+        """Bar END time of the feed orders execute on (same as bar_end in Studio)."""
+        dt = self.exec_data.datetime.datetime(0)
+        dt = (dt + dtm.timedelta(seconds=30)).replace(second=0, microsecond=0)
+        if self.cfg["BAR_TIMESTAMP"] == "open":
+            dt = dt + dtm.timedelta(minutes=self.exec_minutes)
+        return dt
+
     # ------------------------------------------------------------ main loop
     def next(self):
+        if len(self.data) == self.signal_len:
+            return                                  # only the execution feed moved
+        self.signal_len = len(self.data)
         self.now = self.bar_end()
         self.ny_now = self.guard.ny(self.now)
         equity = self.broker.getvalue()
-        pos = self.getposition(self.data).size
+        pos = self.getposition(self.exec_data).size
         reason = self.guard.update(self.now, equity, self.balance, has_position=(pos != 0))
         self.track_day(equity)
 
@@ -650,7 +669,7 @@ class TLPropBot(bt.Strategy):
         elif pos != 0:
             # a position we do not know about: close it (should never happen)
             self.log("!!! untracked position size " + str(pos) + ": closing it")
-            self.close_order = self.close()
+            self.close_order = self.close(data=self.exec_data)
         elif self.entry_order is not None:
             self.manage_pending_entry()
         else:
@@ -788,7 +807,7 @@ class TLPropBot(bt.Strategy):
         if lots <= 0:
             self.log("SKIP " + label + ": " + why)
             return
-        kw = {"size": lots, "stopprice": stop, "limitexec": None}
+        kw = {"data": self.exec_data, "size": lots, "stopprice": stop, "limitexec": None}
         if entry_price is None:
             kw["exectype"] = bt.Order.Market
         else:
@@ -870,13 +889,15 @@ class TLPropBot(bt.Strategy):
             if price <= self.data.close[0]:
                 self.exit_position("TARGET_PASSED")
                 return
-            self.target_order = self.sell(size=t["lots"], exectype=bt.Order.Limit, price=price, oco=self.stop_order)
+            self.target_order = self.sell(data=self.exec_data, size=t["lots"], exectype=bt.Order.Limit,
+                                          price=price, oco=self.stop_order)
         else:
             price = round_to_tick(t["fill_price"] - r * risk_pts, self.tick, "up")
             if price >= self.data.close[0]:
                 self.exit_position("TARGET_PASSED")
                 return
-            self.target_order = self.buy(size=t["lots"], exectype=bt.Order.Limit, price=price, oco=self.stop_order)
+            self.target_order = self.buy(data=self.exec_data, size=t["lots"], exectype=bt.Order.Limit,
+                                         price=price, oco=self.stop_order)
         t["target_placed"] = True
         self.log("TARGET placed at " + str(price))
 
@@ -886,7 +907,7 @@ class TLPropBot(bt.Strategy):
         for o in (self.target_order, self.stop_order):
             if o is not None and o.alive():
                 self.cancel(o)
-        self.close_order = self.close()
+        self.close_order = self.close(data=self.exec_data)
 
     # ------------------------------------------------------------ broker events
     def same_order(self, a, b):
@@ -896,11 +917,11 @@ class TLPropBot(bt.Strategy):
     def notify_order(self, order):
         if order.status in (order.Submitted, order.Accepted):
             return
-        self.ny_now = self.guard.ny(self.bar_end())
+        self.ny_now = self.guard.ny(self.exec_bar_end())
         t = self.trade_info
         if self.same_order(order, self.entry_order):
             if order.status == order.Completed:
-                fill_time = self.bar_end() - dtm.timedelta(minutes=self.bar_minutes)
+                fill_time = self.exec_bar_end() - dtm.timedelta(minutes=self.exec_minutes)
                 t["filled"] = True
                 t["fill_price"] = order.executed.price
                 t["fill_time"] = fill_time
@@ -929,18 +950,19 @@ class TLPropBot(bt.Strategy):
     def notify_trade(self, trade):
         if not trade.isclosed:
             return
-        self.now = self.bar_end()
+        self.now = self.exec_bar_end()
         self.ny_now = self.guard.ny(self.now)
         pnl = trade.pnlcomm
         self.balance += pnl
         t = self.trade_info or {}
         r = self.guard.register_exit(self.now, pnl)
-        exit_time = self.bar_end()
+        exit_time = self.exec_bar_end()
         held_min = None
         if t.get("fill_time") is not None:
             held_min = (exit_time - t["fill_time"]).total_seconds() / 60.0
         rec = {
             "entry_time_ny": self.guard.ny(t["fill_time"]) if t.get("fill_time") else None,
+            "fill_time": t.get("fill_time"),        # bar-open time of the fill, data clock
             "exit_time_ny": self.guard.ny(exit_time),
             "day": self.guard.day,
             "direction": t.get("direction"),
