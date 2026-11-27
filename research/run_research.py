@@ -33,7 +33,8 @@ import pandas as pd
 from harness_core import resample, run_bot
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "data", "NAS100_1m.csv")
+DATA = os.path.join(HERE, "data", "NAS100_1m_2018.csv")
+COST_REF_PRICE = 30000.0      # costs scale with price: BASE_COST points at this price
 REPORTS = os.path.join(HERE, "reports")
 INITIAL = 5000.0
 BASE_COST = 2.5
@@ -68,7 +69,8 @@ def run_config(job):
     s = dict(RESEARCH_SETTINGS)
     s.update(settings)
     t0 = time.time()
-    strat = run_bot(bars_for(minutes), minutes, s, cost_points=cost)
+    strat = run_bot(bars_for(minutes), minutes, s, cost_points=cost,
+                    cost_ref_price=float(os.environ.get("COST_REF_PRICE", COST_REF_PRICE)))
     recs = []
     for r in strat.trade_records:
         recs.append({k: r[k] for k in ("entry_time_ny", "exit_time_ny", "day", "direction", "lots",
@@ -299,9 +301,12 @@ def main():
     ap.add_argument("--mc-runs", type=int, default=10000)
     ap.add_argument("--data", default=None, help="1-minute CSV (default data/NAS100_1m.csv)")
     ap.add_argument("--out", default="stage3_report.md")
+    ap.add_argument("--fixed-cost", action="store_true", help="fixed points instead of price-scaled costs")
     a = ap.parse_args()
     if a.data:
         os.environ["NAS100_CSV"] = os.path.abspath(a.data)
+    if a.fixed_cost:
+        os.environ["COST_REF_PRICE"] = "0"
     os.makedirs(REPORTS, exist_ok=True)
 
     one = bars_for(1)
@@ -326,7 +331,8 @@ def main():
         one.index[0], one.index[-1]))
     lines.append("In-sample: before {:%Y-%m-%d %H:%M} NY. Out-of-sample: after. "
                  "OOS trading days in Monte Carlo pool: {}.".format(cut_ny, len(oos_days)))
-    lines.append("Costs: 1x = {} points round trip, 1.5x = {} points. Risk 0.5% ($25) per trade, "
+    lines.append("Costs: 1x = {} points round trip at NAS100 30,000 (scaled with price, e.g. about 0.5 points "
+                 "at 6,300 in 2018), 1.5x = {} points. Risk 0.5% ($25) per trade, "
                  "1:20 leverage, 30% margin cap. {} backtests in {:.0f} s.".format(
                      BASE_COST, BASE_COST * 1.5, len(jobs), elapsed))
     lines.append("")

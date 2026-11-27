@@ -15,13 +15,16 @@ import tl_prop_bot  # noqa: E402
 
 class LotCommission(bt.CommInfoBase):
     """Lots x points x VALUE_PER_POINT_PER_LOT, plus a fixed cost per lot per side.
-    cost_points is the ROUND-TRIP spread+slippage in index points."""
+    cost_points is the ROUND-TRIP spread+slippage in index points.
+    If cost_ref_price > 0 the cost scales with price (cost_points at that price),
+    so 2.5 points at 30,000 becomes about 0.53 points when NAS100 was at 6,300."""
     params = (
         ("stocklike", False),
         ("commtype", bt.CommInfoBase.COMM_FIXED),
         ("value_per_point", 10.0),
         ("cost_points", 2.5),
         ("leverage_", 20.0),
+        ("cost_ref_price", 0.0),
     )
 
     def __init__(self):
@@ -30,7 +33,8 @@ class LotCommission(bt.CommInfoBase):
         self.p.commission = self.p.cost_points / 2.0 * self.p.value_per_point
 
     def _getcommission(self, size, price, pseudoexec):
-        return abs(size) * self.p.commission
+        scale = price / self.p.cost_ref_price if self.p.cost_ref_price > 0 else 1.0
+        return abs(size) * self.p.commission * scale
 
     def get_margin(self, price):
         return price * self.p.value_per_point / self.p.leverage_
@@ -79,6 +83,7 @@ def resample(df, minutes):
 
 
 def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, leverage=20.0,
+            cost_ref_price=0.0,
             news=None, verbose=False):
     """Run TLPropBot on a close-stamped OHLCV DataFrame. Returns the strategy."""
     s = dict(settings or {})
@@ -96,7 +101,8 @@ def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, l
         cerebro.adddata(feed)
         cerebro.broker.setcash(float(s.get("INITIAL_BALANCE", tl_prop_bot.SETTINGS["INITIAL_BALANCE"])))
         cerebro.broker.addcommissioninfo(LotCommission(value_per_point=value_per_point,
-                                                       cost_points=cost_points, leverage_=leverage))
+                                                       cost_points=cost_points, leverage_=leverage,
+                                                       cost_ref_price=cost_ref_price))
         cerebro.addstrategy(tl_prop_bot.TLPropBot, **s)
         return cerebro.run()[0]
     finally:

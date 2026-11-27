@@ -1,4 +1,7 @@
-# Stage 3 research report
+# Stage 3 research report (2024-2026, SUPERSEDED)
+
+> Superseded by `stage3_report_2018_2026.md`. This run used a HistData clock conversion that put
+> about 4 weeks a year (when US and European daylight-saving dates differ) one hour off, and fixed-point costs.
 
 Generated 2026-11-27 04:54 from `data/NAS100_1m.csv`, 980184 1-minute bars, 2024-01-01 23:01:00 to 2026-11-13 21:14:00 UTC.
 In-sample: before 2026-01-03 14:22 NY. Out-of-sample: after. OOS trading days in Monte Carlo pool: 224.
