@@ -3,7 +3,7 @@
 TL PROP BOT - TradeLocker Studio bot for a Goat Funded Trader 2-Step evaluation
 ==============================================================================
 
-STATUS: Stage 2. Settings, PropRiskGuard and both strategies (RSI2, ORB).
+STATUS: Stage 3. Settings, PropRiskGuard and four strategies (RSI2, ORB, SR, SCALP).
 Not yet validated: see research/ reports before trading it anywhere.
 
 HOW TO USE IN STUDIO
@@ -33,7 +33,7 @@ import backtrader as bt
 # =============================================================================
 SETTINGS = dict(
     # ---- which strategy -----------------------------------------------------
-    STRATEGY="RSI2",                 # "RSI2" (15m/1H), "ORB" (5m) or "SR" (15m/1H)
+    STRATEGY="RSI2",                 # "RSI2" (15m/1H), "ORB" (5m), "SR" (15m/1H) or "SCALP" (1m)
 
     # ---- account -----------------------------------------------------------
     INITIAL_BALANCE=5000.0,          # starting balance of the evaluation
@@ -116,6 +116,23 @@ SETTINGS = dict(
     SR_MIN_RR=1.0,                   # skip unless the next level is >= 1R away
     SR_MAX_RR=3.0,                   # target = next level, capped at 3R (3R if none)
     SR_TREND_FILTER=False,           # True = longs only above TREND_EMA, shorts below
+
+    # ---- Strategy D: SCALP - many small trend-pullback trades (1m chart) ---
+    # Trend = fast EMA above slow EMA (long) or below (short). Entry when a bar
+    # dips to the fast EMA and closes back on the trend side as a with-trend bar.
+    # Stop just beyond that bar, small fixed-R target, short time limit.
+    # Each trade is held at least MIN_HOLD_SECONDS unless the stop is hit.
+    # Uses its OWN risk and entries-per-day limits (below) instead of the
+    # RISK_PER_TRADE_PCT / MAX_ENTRIES_PER_DAY values above.
+    SCALP_RISK_PCT=0.25,             # risk per trade, % of initial balance ($12.50 on 5k)
+    SCALP_MAX_ENTRIES_PER_DAY=10,
+    SCALP_FAST_EMA=9,
+    SCALP_SLOW_EMA=50,
+    SCALP_STOP_ATR=0.5,              # stop = bar's low/high -/+ 0.5 x ATR(14)
+    SCALP_MIN_STOP_PCT=0.03,         # stop at least 0.03% of price away (~9 pts at 30,000)
+    SCALP_TARGET_R=1.0,              # take profit at 1R (placed after the 2-minute hold)
+    SCALP_MAX_HOLD_MIN=15,           # close after 15 minutes if neither stop nor target hit
+    SCALP_COOLDOWN_MIN=5,            # wait this long after an exit before a new entry
 
     # ---- time --------------------------------------------------------------
     BAR_TIMESTAMP="close",           # Studio stamps each bar at its CLOSE (measured)
@@ -582,10 +599,13 @@ class TLPropBot(bt.Strategy):
         for k in SETTINGS:
             if not isinstance(SETTINGS[k], list):
                 cfg[k] = getattr(self.p, k)
+        self.mode = str(cfg["STRATEGY"]).upper()
+        if self.mode == "SCALP":
+            cfg["RISK_PER_TRADE_PCT"] = cfg["SCALP_RISK_PCT"]
+            cfg["MAX_ENTRIES_PER_DAY"] = cfg["SCALP_MAX_ENTRIES_PER_DAY"]
         self.cfg = cfg
         self.guard = PropRiskGuard(cfg, log=self.log)
         self.tick = float(cfg["TICK_SIZE"])
-        self.mode = str(cfg["STRATEGY"]).upper()
 
         if cfg["BAR_MINUTES"]:
             self.bar_minutes = int(cfg["BAR_MINUTES"])
@@ -636,8 +656,17 @@ class TLPropBot(bt.Strategy):
             if self.bar_minutes > int(cfg["ORB_MINUTES"]) or int(cfg["ORB_MINUTES"]) % self.bar_minutes:
                 self.log("CONFIG ERROR: ORB needs bars of " + str(cfg["ORB_MINUTES"])
                          + " minutes or a divisor of it; data has " + str(self.bar_minutes))
+        elif self.mode == "SCALP":
+            c = self.data.close
+            self.ema_fast = bt.indicators.EMA(c, period=int(cfg["SCALP_FAST_EMA"]))
+            self.ema_slow = bt.indicators.EMA(c, period=int(cfg["SCALP_SLOW_EMA"]))
+            self.atr = bt.indicators.ATR(self.data, period=int(cfg["ATR_PERIOD"]))
+            self.coin = SeededCoin(cfg["RANDOM_SEED"])
+            if self.bar_minutes > 5:
+                self.log("CONFIG WARNING: SCALP is designed for 1-minute bars; data has "
+                         + str(self.bar_minutes))
         else:
-            self.log("CONFIG ERROR: STRATEGY must be RSI2, ORB or SR, got " + self.mode)
+            self.log("CONFIG ERROR: STRATEGY must be RSI2, ORB, SR or SCALP, got " + self.mode)
 
         # order / trade state
         self.entry_order = None
@@ -649,6 +678,7 @@ class TLPropBot(bt.Strategy):
         self.trade_records = []           # read by the research harness
         self.day_stats = {}
         self.deferred_logged = None
+        self.last_exit_time = None        # for SCALP_COOLDOWN_MIN
         self.now = None
         self.ny_now = None
 
@@ -710,6 +740,8 @@ class TLPropBot(bt.Strategy):
                 self.orb_entry()
             elif self.mode == "SR":
                 self.sr_entry()
+            elif self.mode == "SCALP":
+                self.scalp_entry()
 
     def track_day(self, equity):
         d = self.guard.day
@@ -871,6 +903,43 @@ class TLPropBot(bt.Strategy):
             label = "SR RANDOM"
         self.submit_entry(direction, None, stop, c, label, target=target)
 
+    def scalp_entry(self):
+        if not self.in_entry_window():
+            return
+        if self.last_exit_time is not None:
+            if (self.now - self.last_exit_time).total_seconds() < 60 * self.cfg["SCALP_COOLDOWN_MIN"]:
+                return
+        ok, why = self.guard.can_open(self.now, 0)
+        if not ok:
+            return
+        d = self.data
+        atr = self.atr[0]
+        if atr <= 0:
+            return
+        o, h, lo, c = d.open[0], d.high[0], d.low[0], d.close[0]
+        fast, slow = self.ema_fast[0], self.ema_slow[0]
+        direction = 0
+        if fast > slow and lo <= fast and c > fast and c > o:
+            direction = 1
+        elif fast < slow and h >= fast and c < fast and c < o:
+            direction = -1
+        if direction == 0:
+            return
+        min_dist = c * self.cfg["SCALP_MIN_STOP_PCT"] / 100.0
+        if direction > 0:
+            dist = max(c - (lo - self.cfg["SCALP_STOP_ATR"] * atr), min_dist)
+        else:
+            dist = max((h + self.cfg["SCALP_STOP_ATR"] * atr) - c, min_dist)
+        label = "SCALP"
+        if self.cfg["RANDOM_DIRECTION"]:
+            direction = self.coin.flip()      # same moment and distances, random side
+            label = "SCALP RANDOM"
+        if direction > 0:
+            stop = round_to_tick(c - dist, self.tick, "down")
+        else:
+            stop = round_to_tick(c + dist, self.tick, "up")
+        self.submit_entry(direction, None, stop, c, label)
+
     def orb_update_bar(self):
         d = self.data
         self.daily_atr.update(self.guard.day, d.high[0], d.low[0], d.close[0])
@@ -995,6 +1064,10 @@ class TLPropBot(bt.Strategy):
     def exit_signal(self, t):
         if self.session_exit_due():
             return "SESSION_END"
+        if self.mode == "SCALP":
+            if t["filled"] and self.guard.held_seconds(self.now) >= 60 * self.cfg["SCALP_MAX_HOLD_MIN"]:
+                return "TIME_STOP"
+            return None
         if self.mode != "RSI2":
             return None
         c = self.data.close[0]
@@ -1017,8 +1090,8 @@ class TLPropBot(bt.Strategy):
         minimum hold time, so a fast profit can never be closed inside 2 minutes."""
         if t["target_placed"] or not t["filled"]:
             return
-        r = self.cfg["ORB_TARGET_R"]
-        if t.get("target_price") is None and (self.mode != "ORB" or r <= 0):
+        r = self.cfg["SCALP_TARGET_R"] if self.mode == "SCALP" else self.cfg["ORB_TARGET_R"]
+        if t.get("target_price") is None and (self.mode not in ("ORB", "SCALP") or r <= 0):
             return
         ok, why = self.guard.exit_allowed(self.now, False)
         if not ok:
@@ -1122,6 +1195,7 @@ class TLPropBot(bt.Strategy):
             "label": t.get("label"),
         }
         self.trade_records.append(rec)
+        self.last_exit_time = exit_time
         self.log("EXIT {} {} pnl ${:+.2f} R={} held {} min | dayPnL ${:+.2f} | {}".format(
             rec["reason"], t.get("label"), pnl, "n/a" if r is None else "{:+.2f}".format(r),
             "?" if held_min is None else "{:.0f}".format(held_min),

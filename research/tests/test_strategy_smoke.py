@@ -12,7 +12,7 @@ def bars5():
     return synthetic_bars(days=150, seed=11)
 
 
-def check_rules(strat, label):
+def check_rules(strat, label, max_per_day=3):
     recs = strat.trade_records
     assert recs, label + ": expected some trades on synthetic data"
     g = strat.guard
@@ -33,7 +33,7 @@ def check_rules(strat, label):
         risk = abs(r["entry"] - r["stop"]) * r["lots"] * 10.0
         assert risk <= 25.0 * 1.05 + 1e-9, (label, r)                 # 0.5% of 5000 (+gap at fill)
         per_day[r["day"]] = per_day.get(r["day"], 0) + 1
-    assert max(per_day.values()) <= 3
+    assert max(per_day.values()) <= max_per_day
     assert g.worst_day_pct > -4.0
     return recs
 
@@ -134,3 +134,39 @@ def test_sr_with_minute_execution(bars5):
     strat = run_bot(resample(one, 15), 15, {"STRATEGY": "SR"}, exec_df=one)
     if strat.trade_records:
         check_rules(strat, "SR-1m")
+
+
+@pytest.fixture(scope="module")
+def bars1():
+    return synthetic_bars(days=30, seed=5, minutes=1)
+
+
+def test_scalp_1m(bars1):
+    strat = run_bot(bars1, 1, {"STRATEGY": "SCALP"})
+    recs = check_rules(strat, "SCALP", max_per_day=10)
+    assert len(recs) > 10
+    days = {}
+    for r in recs:
+        days[r["day"]] = days.get(r["day"], 0) + 1
+        assert r["reason"] in {"STOP", "TARGET", "TARGET_PASSED", "TIME_STOP", "SESSION_END",
+                               "DAILY_STOP", "TOTAL_STOP", "TARGET_LOCK", "NEWS_FLATTEN", "WEEKEND"}
+        if r["reason"] == "TIME_STOP":
+            assert r["held_min"] <= 15 + 2
+    assert max(days.values()) <= 10                       # SCALP_MAX_ENTRIES_PER_DAY
+    # 0.25% risk: never more than $12.50 planned risk (plus stop slippage)
+    assert min(r["pnl"] for r in recs) > -12.5 * 2
+
+
+def test_scalp_cooldown(bars1):
+    strat = run_bot(bars1, 1, {"STRATEGY": "SCALP", "SCALP_COOLDOWN_MIN": 5})
+    recs = strat.trade_records
+    for a, b in zip(recs, recs[1:]):
+        if a["day"] == b["day"]:
+            gap = (b["entry_time_ny"] - a["exit_time_ny"]).total_seconds() / 60.0
+            assert gap >= 5 - 1e-9, (a, b)
+
+
+def test_scalp_random_is_seeded(bars1):
+    a = run_bot(bars1, 1, {"STRATEGY": "SCALP", "RANDOM_DIRECTION": True, "RANDOM_SEED": 3})
+    b = run_bot(bars1, 1, {"STRATEGY": "SCALP", "RANDOM_DIRECTION": True, "RANDOM_SEED": 3})
+    assert [r["direction"] for r in a.trade_records] == [r["direction"] for r in b.trade_records]
