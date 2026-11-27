@@ -21,7 +21,7 @@ class LotCommission(bt.CommInfoBase):
         ("commtype", bt.CommInfoBase.COMM_FIXED),
         ("value_per_point", 10.0),
         ("cost_points", 2.5),
-        ("leverage_", 50.0),
+        ("leverage_", 20.0),
     )
 
     def __init__(self):
@@ -78,7 +78,7 @@ def resample(df, minutes):
     return out.dropna()
 
 
-def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, leverage=50.0,
+def run_bot(df, minutes, settings=None, cost_points=2.5, value_per_point=10.0, leverage=20.0,
             news=None, verbose=False):
     """Run TLPropBot on a close-stamped OHLCV DataFrame. Returns the strategy."""
     s = dict(settings or {})

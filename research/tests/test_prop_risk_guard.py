@@ -307,17 +307,17 @@ class TestWeekend:
 # ---------------------------------------------------------------- measured NAS100.X values
 class TestRealInstrument:
     def test_nas100_defaults(self):
-        g = PropRiskGuard()                      # bot defaults: $10/pt/lot, 1:50, max 0.30
+        g = PropRiskGuard()                      # bot defaults: $10/pt/lot, 1:20, max 0.30
         g.update(WED_SUMMER_UTC, 5000.0)
         lots, _ = g.size_position(30000.0, 29948.0, 5000.0)  # 1.5 x ATR(14) ~ 52 pts
         assert lots == pytest.approx(0.04)                    # $25 / (52 * $10) = 0.048
         assert lots * 52 * 10 <= 25.0
-        assert g.margin_used(lots, 30000.0) / 5000.0 < 0.30   # $240 margin = 4.8%
+        assert g.margin_used(lots, 30000.0) / 5000.0 < 0.30   # $600 margin = 12%
 
     def test_nas100_tight_stop_hits_margin_cap(self):
-        # 1 lot @30000 = $300k notional = $6000 margin at 1:50.
-        # 30% of $5000 = $1500 -> 0.25 lots max, before MAX_LOT (0.30) applies.
+        # 1 lot @30000 = $300k notional = $15000 margin at 1:20 (GFT indices).
+        # 30% of $5000 = $1500 -> 0.10 lots max, before MAX_LOT (0.30) applies.
         g = PropRiskGuard()
         g.update(WED_SUMMER_UTC, 5000.0)
-        lots, why = g.size_position(30000.0, 29992.0, 5000.0)  # 8 pts -> risk says 0.31
-        assert lots == pytest.approx(0.25) and "margin" in why
+        lots, why = g.size_position(30000.0, 29980.0, 5000.0)  # 20 pts -> risk says 0.125
+        assert lots == pytest.approx(0.10) and "margin" in why

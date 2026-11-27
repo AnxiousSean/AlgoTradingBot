@@ -63,7 +63,7 @@ SETTINGS = dict(
     LOT_STEP=0.01,
     TICK_SIZE=0.01,                  # Studio rounds order prices to this
     MAX_LOT=0.30,                    # hard ceiling on any single order (~$3/pt)
-    LEVERAGE=50.0,                   # Studio reports 1:50 (margin = notional / leverage).
+    LEVERAGE=20.0,                   # GFT indices leverage 1:20 (Studio backtest reports 1:50).
                                      # Use the LOWER of this and your GFT account leverage.
     MARGIN_CAP_PCT=30.0,             # margin used must stay under this % of equity (firm: 80%)
 
