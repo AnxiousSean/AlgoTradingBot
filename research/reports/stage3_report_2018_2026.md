@@ -1,4 +1,4 @@
-# Stage 3 research report (2018-2026, 1-minute execution)
+# Stage 3 research report (2018-2026, 1-minute execution) (SUPERSEDED by stage3_report_2010_2026.md)
 
 Generated 2026-11-27 06:22 from `data/NAS100_1m_2018.csv`, 2814888 1-minute bars, 2018-01-01 21:31:00 to 2026-11-13 21:14:00 UTC.
 In-sample: before 2024-03-17 07:43 NY. Out-of-sample: after. OOS trading days in Monte Carlo pool: 684.
