@@ -330,7 +330,7 @@ def main():
                  "1:20 leverage, 30% margin cap. {} backtests in {:.0f} s.".format(
                      BASE_COST, BASE_COST * 1.5, len(jobs), elapsed))
     lines.append("")
-    lines.append("Data source: Dukascopy USATECHIDXUSD BID 1m candles (not TradeLocker's feed).")
+    lines.append("Data source: HistData.com NSXUSD 1m bars (same feed as Dukascopy USATECHIDXUSD; not TradeLocker's feed, but matches NAS100.X within a few points, see data_check.md).")
     lines.append("")
 
     main_names = [j[0] for j in jobs if not j[0].startswith("GRID")]
